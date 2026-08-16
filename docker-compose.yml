@@ -1,0 +1,26 @@
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: movie-shorts-agent:latest
+    container_name: movie-shorts-agent
+    env_file:
+      - .env
+    environment:
+      - OUTPUT_DIR=/app/output
+      - DOWNLOADS_DIR=/app/downloads
+    volumes:
+      - ./output:/app/output
+      - ./downloads:/app/downloads
+    # Run a short pipeline once at startup, or leave it idle until invoked.
+    # Override the command with: docker compose run --rm agent --query "…"
+    command: ["--dry-run"]
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    # The pipeline needs network to reach YouTube/edge-tts/Gemini.
+    network_mode: host
+    # yt-dlp + ffmpeg may touch the OS temp dir; give it a bounded tmpfs.
+    tmpfs:
+      - /tmp:size=512m
