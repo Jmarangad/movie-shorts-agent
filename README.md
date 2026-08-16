@@ -84,6 +84,8 @@ See `.env.example` for every setting. Key ones:
 | `HINDI_FONT` | Lohit-Devanagari | caption font path |
 | `KEEP_CLIPS` | `false` | keep downloaded clip files |
 | `MIN_CLIP_MOTION` | `2.5` | drop clips below this motion score (still photos / title cards) |
+| `BACKUP_DIR` | `output/backups` | timestamped folder per run holding the output artifacts |
+| `BACKUP_RETENTION_HOURS` | `48` | delete backup folders older than this many hours |
 
 ## Notes / limitations
 

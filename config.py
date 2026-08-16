@@ -71,6 +71,16 @@ class Settings(BaseSettings):
         description="JSON list of video_ids already turned into Shorts",
     )
 
+    # --- Output backup (retain each run's files for a while) --------------
+    backup_dir: Path = Field(
+        default=Path("output/backups"),
+        description="timestamped subfolder per run holding the output artifacts",
+    )
+    backup_retention_hours: float = Field(
+        default=48.0, ge=0.0,
+        description="delete backup folders older than this many hours",
+    )
+
     # --- Schedule (Module 6) ----------------------------------------------
     schedule_interval_hours: float = Field(default=3.0, ge=0.1)
 

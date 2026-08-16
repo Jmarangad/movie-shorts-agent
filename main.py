@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -83,6 +84,53 @@ def _genres(settings: Settings) -> list[str]:
     return [g.strip() for g in settings.movie_genres.split(",") if g.strip()]
 
 
+# --- output backup -----------------------------------------------------------
+def prune_backups(backup_dir: Path, retention_hours: float) -> int:
+    """Delete backup folders older than ``retention_hours``. Returns count."""
+    if retention_hours <= 0 or not backup_dir.exists():
+        return 0
+    cutoff = time.time() - retention_hours * 3600.0
+    pruned = 0
+    for entry in backup_dir.iterdir():
+        if not entry.is_dir():
+            continue
+        try:
+            too_old = entry.stat().st_mtime < cutoff
+        except OSError:
+            too_old = False
+        if too_old:
+            shutil.rmtree(entry, ignore_errors=True)
+            logger.info("pruned backup folder older than %dh: %s", retention_hours, entry.name)
+            pruned += 1
+    return pruned
+
+
+def backup_outputs(
+    settings: Settings,
+    *paths: Path,
+) -> Path:
+    """Copy the run's artifacts into a fresh timestamped backup folder.
+
+    The canonical ``output/`` files (final_short.mp4, narration.mp3,
+    story_plan.json) stay in place so consumers read the latest; each run's
+    copy is kept under ``settings.backup_dir`` until the retention window
+    expires. Never raises: a failed backup only logs a warning.
+    """
+    dest = settings.backup_dir / time.strftime("%Y%m%d_%H%M%S")
+    copied = 0
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        for path in paths:
+            if path.exists():
+                shutil.copy2(path, dest / path.name)
+                copied += 1
+        logger.info("backed up %d artifact(s) to %s", copied, dest)
+    except OSError as exc:
+        logger.warning("backup to %s failed: %s", dest, exc)
+    prune_backups(settings.backup_dir, settings.backup_retention_hours)
+    return dest
+
+
 def _select_candidate(
     settings: Settings,
     used: set[str],
@@ -138,6 +186,7 @@ def run_pipeline(settings: Settings, query: str | None = None, video_id: str | N
     """Execute the five-module pipeline and return the final Short path."""
     start = time.time()
     out_dir, down_dir = _output_dirs(settings)
+    prune_backups(settings.backup_dir, settings.backup_retention_hours)
 
     # 1-2. Search + transcript ----------------------------------------------------
     used = load_used_movies(settings.used_movies_path)
@@ -199,6 +248,9 @@ def run_pipeline(settings: Settings, query: str | None = None, video_id: str | N
     # 5. Edit --------------------------------------------------------------------
     final_path = out_dir / "final_short.mp4"
     final_path = build_short(clips, audio_path, final_path, plan, settings)
+
+    # Keep this run's artifacts in a timestamped backup folder (48 h by default).
+    backup_outputs(settings, final_path, audio_path, plan_path)
 
     if not settings.keep_clips:
         for clip in clips:

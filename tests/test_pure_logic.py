@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -180,3 +181,28 @@ def test_used_movies_roundtrip(tmp_path):
     assert load_used_movies(path) == {"aaa", "bbb"}
     reset_used_movies(path)
     assert load_used_movies(path) == set()
+
+
+def test_backup_outputs_copies_and_prunes(tmp_path):
+    from main import backup_outputs, prune_backups
+
+    settings = Settings(backup_dir=tmp_path / "backups", backup_retention_hours=48)
+    src = tmp_path / "final_short.mp4"
+    src.write_bytes(b"fake-video")
+    backup_outputs(settings, src)
+
+    folders = list((tmp_path / "backups").iterdir())
+    assert len(folders) == 1
+    assert (folders[0] / "final_short.mp4").read_bytes() == b"fake-video"
+    assert settings.backup_dir.exists()
+
+    # Nothing older than the window is pruned; an old folder is.
+    old = settings.backup_dir / "old"
+    old.mkdir()
+    old_time = time.time() - 49 * 3600.0
+    import os
+
+    os.utime(old, (old_time, old_time))
+    prune_backups(settings.backup_dir, settings.backup_retention_hours)
+    assert not old.exists()
+    assert len(list(settings.backup_dir.iterdir())) == 1
