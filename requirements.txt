@@ -7,4 +7,5 @@ google-api-python-client>=2.120.0
 openai>=1.30.0
 python-dotenv>=1.0.0
 pillow>=10.0.0
+opencv-python-headless>=4.8.0
 pydantic-settings>=2.0.0

@@ -2,9 +2,11 @@
 
 CLI usage::
 
-    python main.py --query "hindi action movie full movie"
+    python main.py                          # search thriller/romantic/horror, new movie each run
     python main.py --video-id dQw4w9WgXcQ   # skip search, use a known video
     python main.py --dry-run                # no TTS/download/edit, plan only
+    python main.py --reset-used             # forget all previously-used movies
+    python main.py --schedule               # run now, then repeat every SCHEDULE_INTERVAL_HOURS
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ import time
 from pathlib import Path
 
 from config import Settings, get_settings
-from src.modules.downloader import download_scenes
+from src.modules.downloader import DownloadError, download_scenes
 from src.modules.transcript_llm import (
     StoryPlanError,
     TranscriptError,
@@ -29,6 +31,8 @@ from src.modules.video_editor import build_short
 from src.modules.youtube_search import MovieCandidate, YouTubeSearchError, search_movies
 
 logger = logging.getLogger("movie_shorts")
+
+_PIPELINE_ERRORS = (YouTubeSearchError, TranscriptError, StoryPlanError, DownloadError)
 
 
 def _setup_logging(settings: Settings) -> None:
@@ -46,47 +50,99 @@ def _output_dirs(settings: Settings) -> tuple[Path, Path]:
     return out, down
 
 
+# --- used-movie tracking -----------------------------------------------------
+def load_used_movies(path: Path) -> set[str]:
+    """Read the set of video_ids already turned into Shorts."""
+    if not path.exists():
+        return set()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return set()
+    return set(data.get("video_ids", []) if isinstance(data, dict) else data)
+
+
+def mark_movie_used(path: Path, video_id: str) -> None:
+    """Append ``video_id`` to the used-movies registry."""
+    used = load_used_movies(path)
+    used.add(video_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"video_ids": sorted(used)}, indent=2),
+        encoding="utf-8",
+    )
+
+
+def reset_used_movies(path: Path) -> None:
+    """Clear the used-movies registry."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"video_ids": []}, indent=2), encoding="utf-8")
+
+
+def _genres(settings: Settings) -> list[str]:
+    return [g.strip() for g in settings.movie_genres.split(",") if g.strip()]
+
+
+def _select_candidate(
+    settings: Settings,
+    used: set[str],
+    query: str | None,
+    video_id: str | None,
+) -> tuple[MovieCandidate, str]:
+    """Pick the most-viewed, language-matching, not-yet-used movie with a transcript.
+
+    Returns ``(candidate, transcript)``.
+    """
+    if video_id:
+        candidate = MovieCandidate(
+            video_id=video_id,
+            title=video_id,
+            channel="unknown",
+            published_at="",
+            duration_seconds=0,
+            view_count=0,
+            url=f"https://www.youtube.com/watch?v={video_id}",
+        )
+        logger.info("using explicit video %s", video_id)
+        transcript = fetch_transcript(video_id, max_chars=settings.max_transcript_chars)
+        return candidate, transcript
+
+    candidates = search_movies(
+        settings.youtube_api_key,
+        query=query,
+        genres=_genres(settings),
+        max_results=5,
+        language=settings.search_language,
+    )
+    # Most-viewed first, but never reuse a movie we already turned into a Short.
+    candidates.sort(key=lambda c: c.view_count, reverse=True)
+    for cand in candidates:
+        if cand.video_id in used:
+            logger.info("skipping already-used movie %s (%s)", cand.video_id, cand.title)
+            continue
+        logger.info(
+            "trying transcript for %s (%s, %.0f views) %s",
+            cand.title, cand.duration_display, cand.view_count, cand.url,
+        )
+        try:
+            transcript = fetch_transcript(cand.video_id, max_chars=settings.max_transcript_chars)
+            return cand, transcript
+        except TranscriptError as exc:
+            logger.warning("no transcript for %s: %s", cand.video_id, exc)
+    raise TranscriptError(
+        "no unused candidate had a usable transcript (run --reset-used to allow repeats)"
+    )
+
+
 def run_pipeline(settings: Settings, query: str | None = None, video_id: str | None = None, dry_run: bool = False) -> Path:
     """Execute the five-module pipeline and return the final Short path."""
     start = time.time()
     out_dir, down_dir = _output_dirs(settings)
 
-    # 1. Search ---------------------------------------------------------------
-    if video_id:
-        candidates = [
-            MovieCandidate(
-                video_id=video_id,
-                title=video_id,
-                channel="unknown",
-                published_at="",
-                duration_seconds=0,
-                view_count=0,
-                url=f"https://www.youtube.com/watch?v={video_id}",
-            )
-        ]
-        logger.info("using explicit video %s", video_id)
-    else:
-        if not query:
-            query = "full movie"
-        candidates = search_movies(settings.youtube_api_key, query=query, max_results=5)
-        candidates.sort(key=lambda c: c.duration_seconds, reverse=True)
-        if not candidates:
-            raise YouTubeSearchError(f"no movie found for query {query!r}")
-
-    # 2. Transcript + story plan ------------------------------------------------
-    candidate: MovieCandidate | None = None
-    transcript: str | None = None
-    for cand in candidates:
-        logger.info("trying transcript for %s (%s) %s", cand.title, cand.duration_display, cand.url)
-        try:
-            transcript = fetch_transcript(cand.video_id, max_chars=settings.max_transcript_chars)
-            candidate = cand
-            break
-        except TranscriptError as exc:
-            logger.warning("no transcript for %s: %s", cand.video_id, exc)
-    if candidate is None or transcript is None:
-        raise TranscriptError("no candidate had a usable transcript")
-    logger.info("chosen: %s (%s)", candidate.title, candidate.duration_display)
+    # 1-2. Search + transcript ----------------------------------------------------
+    used = load_used_movies(settings.used_movies_path)
+    candidate, transcript = _select_candidate(settings, used, query, video_id)
+    logger.info("chosen: %s (%s, %.0f views)", candidate.title, candidate.duration_display, candidate.view_count)
     logger.info("transcript: %d chars", len(transcript))
 
     plan = generate_story_plan(
@@ -110,6 +166,8 @@ def run_pipeline(settings: Settings, query: str | None = None, video_id: str | N
         ),
         encoding="utf-8",
     )
+    # Committed as soon as the movie is selected, so the next run picks a new one.
+    mark_movie_used(settings.used_movies_path, candidate.video_id)
     if dry_run:
         logger.info("dry-run: wrote story_plan.json, stopping before TTS/download/edit")
         return plan_path
@@ -144,19 +202,44 @@ def run_pipeline(settings: Settings, query: str | None = None, video_id: str | N
     return final_path
 
 
+def run_scheduled(settings: Settings, query: str | None = None, video_id: str | None = None, dry_run: bool = False) -> int:
+    """Run the pipeline forever, sleeping between runs."""
+    interval = max(settings.schedule_interval_hours, 0.1) * 3600.0
+    logger.info("scheduler started: every %.1f h", settings.schedule_interval_hours)
+    while True:
+        try:
+            run_pipeline(settings, query=query, video_id=video_id, dry_run=dry_run)
+        except _PIPELINE_ERRORS as exc:
+            logger.error("scheduled run failed: %s", exc)
+        except Exception as exc:  # noqa: BLE001 - keep the loop alive
+            logger.error("scheduled run crashed: %s", exc)
+        logger.info("next run in %.1f h", interval / 3600.0)
+        time.sleep(interval)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="movie-shorts-agent")
-    parser.add_argument("--query", help="YouTube search query (e.g. 'hindi action movie full movie')")
+    parser.add_argument("--query", help="YouTube search query (overrides the genre-based search)")
     parser.add_argument("--video-id", help="skip search and process this video id directly")
     parser.add_argument("--dry-run", action="store_true", help="stop after the story plan is written")
+    parser.add_argument("--schedule", action="store_true", help="run now, then repeat every SCHEDULE_INTERVAL_HOURS")
+    parser.add_argument("--reset-used", action="store_true", help="forget all previously-used movies first")
     args = parser.parse_args(argv)
 
     settings = get_settings()
     _setup_logging(settings)
 
+    if args.reset_used:
+        reset_used_movies(settings.used_movies_path)
+        logger.info("cleared used-movies registry at %s", settings.used_movies_path)
+
+    if args.schedule:
+        run_scheduled(settings, query=args.query, video_id=args.video_id, dry_run=args.dry_run)
+        return 0  # unreachable; kept for typing
+
     try:
         run_pipeline(settings, query=args.query, video_id=args.video_id, dry_run=args.dry_run)
-    except (YouTubeSearchError, TranscriptError, StoryPlanError) as exc:
+    except _PIPELINE_ERRORS as exc:
         logger.error("pipeline failed: %s", exc)
         return 1
     return 0

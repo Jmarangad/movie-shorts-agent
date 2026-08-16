@@ -33,7 +33,9 @@ _SYSTEM_PROMPT = (
     "script. End the script with a hook line.\n"
     "- timestamps: exactly 4 to {max_scenes} scenes, each {min_scene:.0f} to "
     "{max_scene:.0f} seconds long, in ascending order, all inside the video "
-    "duration. Choose the highest-impact visual moments from the transcript.\n"
+    "duration. Pick the highest-impact visual moments, and each scene must "
+    "directly show the on-screen moment the narration is talking about at "
+    "that point (the most-viewed, most dramatic beats of the film).\n"
     "Return ONLY valid JSON matching this schema:\n"
     '{{"hindi_script": str, '
     '"timestamps": [{{"start_time": float, "end_time": float}}]}}'

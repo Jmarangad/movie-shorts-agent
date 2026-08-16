@@ -33,6 +33,7 @@ class MovieCandidate:
     duration_seconds: int
     view_count: int
     url: str
+    language: str = ""
 
     @property
     def duration_display(self) -> str:
@@ -64,17 +65,27 @@ def _build_client(api_key: str) -> Any:
 
 def search_movies(
     api_key: str,
-    query: str = "full movie",
+    query: str | None = None,
+    genres: list[str] | None = None,
     max_results: int = 5,
     category_id: str = _FILM_CATEGORY_ID,
+    language: str = "en",
 ) -> list[MovieCandidate]:
-    """Search for long, film-category videos and rank them by view count.
+    """Search for long, film-category movies and rank them by view count.
+
+    One query per genre is issued (or a single free-text query when ``genres``
+    is empty). Candidates are deduplicated by ``video_id``, enriched with
+    duration/views/audio language, filtered to the preferred language, and
+    sorted by view count descending.
 
     Args:
         api_key: YouTube Data API v3 key.
-        query: free-text search term (e.g. a genre or movie title).
-        max_results: number of candidates to fetch (each is an HTTP request).
+        query: free-text search term, used only when ``genres`` is empty.
+        genres: genre terms to search, e.g. ``["thriller", "horror"]``.
+        max_results: number of candidates to fetch per genre query.
         category_id: YouTube video category id; default ``1`` = Film & Animation.
+        language: preferred audio language (e.g. ``en``); candidates with an
+            unknown language are kept, otherwise only matching ones.
 
     Returns:
         A list of :class:`MovieCandidate` sorted by view count descending.
@@ -83,42 +94,44 @@ def search_movies(
         YouTubeSearchError: on API/network failures or a missing API key.
     """
     client = _build_client(api_key)
+    queries = [f"{g} movie full movie" for g in genres] if genres else [query or "full movie"]
+
+    seen: dict[str, dict[str, Any]] = {}
     try:
-        search_resp = (
-            client.search()
-            .list(
-                part="snippet",
-                q=query,
-                type="video",
-                videoDuration="long",
-                videoCategoryId=category_id,
-                maxResults=max_results,
-                order="viewCount",
+        for q in queries:
+            search_resp = (
+                client.search()
+                .list(
+                    part="snippet",
+                    q=q,
+                    type="video",
+                    videoDuration="long",
+                    videoCategoryId=category_id,
+                    maxResults=max_results,
+                    order="viewCount",
+                )
+                .execute()
             )
-            .execute()
-        )
+            for item in search_resp.get("items", []):
+                vid = item.get("id", {}).get("videoId")
+                if vid and vid not in seen:
+                    seen[vid] = item
     except Exception as exc:
         raise YouTubeSearchError(f"search.list failed: {exc}") from exc
 
-    items = search_resp.get("items", [])
-    if not items:
-        logger.info("no movie candidates found for query %r", query)
+    if not seen:
+        logger.info("no movie candidates found for queries %r", queries)
         return []
 
-    video_ids = [item["id"]["videoId"] for item in items if item.get("id", {}).get("videoId")]
-    # Reuse the snippet fields for channel / title and fill in duration + views.
-    snippets = {
-        item["id"]["videoId"]: item["snippet"]
-        for item in items
-        if item.get("id", {}).get("videoId")
-    }
+    video_ids = list(seen)
+    snippets = {vid: item["snippet"] for vid, item in seen.items()}
     details: dict[str, dict[str, Any]] = {}
     for i in range(0, len(video_ids), 50):
         chunk = video_ids[i : i + 50]
         try:
             videos_resp = (
                 client.videos()
-                .list(part="contentDetails,statistics", id=",".join(chunk))
+                .list(part="snippet,contentDetails,statistics", id=",".join(chunk))
                 .execute()
             )
         except Exception as exc:
@@ -132,6 +145,8 @@ def search_movies(
         video = details.get(video_id, {})
         content = video.get("contentDetails", {})
         stats = video.get("statistics", {})
+        v_snippet = video.get("snippet", {})
+        lang = v_snippet.get("defaultAudioLanguage") or v_snippet.get("defaultLanguage") or ""
         try:
             views = int(stats.get("viewCount", 0) or 0)
         except (TypeError, ValueError):
@@ -145,13 +160,21 @@ def search_movies(
                 duration_seconds=parse_iso_duration(content.get("duration", "")),
                 view_count=views,
                 url=f"https://www.youtube.com/watch?v={video_id}",
+                language=lang,
             )
         )
+
+    # Keep only candidates whose audio language matches the preference,
+    # falling back to everything when no candidate declares a language.
+    if language:
+        matching = [c for c in candidates if c.language.startswith(language)]
+        if matching:
+            candidates = matching
 
     candidates.sort(key=lambda c: c.view_count, reverse=True)
     for c in candidates:
         logger.info(
-            "candidate: %s (%s) views=%d url=%s",
-            c.title, c.duration_display, c.view_count, c.url,
+            "candidate: %s (%s) views=%d lang=%r url=%s",
+            c.title, c.duration_display, c.view_count, c.language, c.url,
         )
     return candidates

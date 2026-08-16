@@ -12,26 +12,32 @@ clips into a 1080×1920 (9:16) Short with animated Hindi captions.
 
 | # | Module | File | Responsibility |
 |---|--------|------|----------------|
-| 1 | Movie search | `src/modules/youtube_search.py` | YouTube Data API v3, `videoDuration=long`, Film & Animation category, ranked by views |
-| 2 | Transcript + LLM | `src/modules/transcript_llm.py` | timestamped transcript via `youtube-transcript-api`; Gemini (or OpenAI) → Hindi narration + scene timestamps |
+| 1 | Movie search | `src/modules/youtube_search.py` | YouTube Data API v3, English thriller/romantic/horror genre queries, ranked by views, language-filtered |
+| 2 | Transcript + LLM | `src/modules/transcript_llm.py` | timestamped transcript via `youtube-transcript-api`; Gemini/OpenAI/DeepSeek/OpenCode/Ollama → Hindi narration + scene timestamps |
 | 3 | TTS | `src/modules/tts_generator.py` | async `edge-tts` (hi-IN-SwaraNeural), auto rate-fit to ~120 s via ffprobe |
-| 4 | Targeted download | `src/modules/downloader.py` | `yt-dlp --download-sections` (external ffmpeg) fetches only the chosen clips |
-| 5 | Video editing | `src/modules/video_editor.py` | MoviePy: center-crop 16:9→9:16, montage loop to fill audio, captions burned with ImageMagick/PIL |
-| 6 | Orchestration | `main.py` | CLI, error handling, `story_plan.json` + `final_short.mp4` output |
-| 7 | Deployment | `Dockerfile` | slim multi-stage image: ffmpeg, ImageMagick (relaxed policy), Deva fonts, non-root |
-| 8 | Compose | `docker-compose.yml` | env-file, output/downloads volumes, host network |
+| 4 | Targeted download | `src/modules/downloader.py` | `yt-dlp --download-sections` (external ffmpeg) fetches only the narration-relevant clips |
+| 5 | Video editing | `src/modules/video_editor.py` | MoviePy: focus-aware 16:9→9:16 crop (keeps the in-focus subject centred), montage loop, captions burned with ImageMagick/PIL |
+| 6 | Orchestration | `main.py` | CLI, used-movie tracking, 3-hour scheduler, `story_plan.json` + `final_short.mp4` |
+| 7 | Deployment | `Dockerfile` | slim multi-stage image: ffmpeg, OpenCV, ImageMagick (relaxed policy), Deva fonts, non-root |
+| 8 | Compose | `docker-compose.yml` | env-file, output/downloads volumes, host network, `--schedule` restart |
 
 ## Quick start
 
 ```bash
-cp .env.example .env     # then fill in YOUTUBE_API_KEY and GEMINI_API_KEY
+cp .env.example .env     # then fill in YOUTUBE_API_KEY and an LLM key
 python -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 # Plan only (no TTS / download / edit):
-.venv/bin/python main.py --query "hindi action movie full movie" --dry-run
+.venv/bin/python main.py --dry-run
 
-# Full pipeline:
-.venv/bin/python main.py --query "hindi action movie full movie"
+# Full pipeline (searches English thriller/romantic/horror, new movie each run):
+.venv/bin/python main.py
+
+# Schedule forever, every 3 hours:
+.venv/bin/python main.py --schedule
+
+# Start over with a fresh set of movies:
+.venv/bin/python main.py --reset-used
 
 # Or target a specific video directly:
 .venv/bin/python main.py --video-id dQw4w9WgXcQ
@@ -39,12 +45,15 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 Output: `output/story_plan.json`, `output/narration.mp3`, `output/final_short.mp4`.
 Downloaded clips live in `downloads/` and are removed unless `KEEP_CLIPS=true`.
+Movies already used are tracked in `output/used_movies.json` so every run picks
+a new one.
 
 ## Docker
 
 ```bash
 docker compose build
-docker compose run --rm agent --query "sci-fi movie full movie"
+docker compose up -d        # starts the 3-hour scheduler
+docker compose run --rm agent --dry-run   # one-off plan-only run
 ```
 
 ## Tests
@@ -64,19 +73,29 @@ See `.env.example` for every setting. Key ones:
 |----------|---------|---------|
 | `YOUTUBE_API_KEY` | — | YouTube Data API v3 key (module 1) |
 | `LLM_PROVIDER` | `gemini` | `gemini`, `openai`, `deepseek`, `opencode` or `ollama` (Ollama Cloud: `OLLAMA_API_KEY`, `OLLAMA_BASE_URL=https://ollama.com/v1`, `OLLAMA_MODEL`) |
-| `GEMINI_API_KEY` | — | Gemini API key (module 2) |
+| `GENRES` | `thriller,romantic,horror` | genres searched (one query each) |
+| `SEARCH_LANGUAGE` | `en` | preferred audio language filter |
 | `TTS_VOICE` | `hi-IN-SwaraNeural` | edge-tts Hindi voice |
 | `TARGET_DURATION_SECONDS` | `120` | target Short length; TTS auto-fits |
 | `MAX_SCENES` | `6` | max LLM-chosen clips |
 | `MIN/MAX_SCENE_SECONDS` | `5`/`12` | allowed clip lengths |
-| `HINDI_FONT` | Noto Sans Devanagari | caption font path |
+| `USED_MOVIES_PATH` | `output/used_movies.json` | registry of movies already used |
+| `SCHEDULE_INTERVAL_HOURS` | `3` | delay between scheduled runs |
+| `HINDI_FONT` | Lohit-Devanagari | caption font path |
 | `KEEP_CLIPS` | `false` | keep downloaded clip files |
 
 ## Notes / limitations
 
-- Requires a *transcript* (manual or auto-generated, English preferred) — speech
-  is matched to the movie timeline.
+- Requires a *transcript* (manual or auto-generated) — speech is matched to the
+  movie timeline; candidates are walked in view-count order until one works.
+- Search is restricted to English audio (`SEARCH_LANGUAGE=en`) and the genres
+  in `GENRES`; candidates without a declared language are kept as fallback.
 - Scene timings are clamped to `[MIN_SCENE_SECONDS, MAX_SCENE_SECONDS]` and to
-  the actual video duration.
+  the actual video duration, and are tied to the narration beats.
+- The 16:9→9:16 crop centers on the in-focus subject (Sobel sharpness map via
+  OpenCV) instead of always the frame centre.
+- YouTube does not expose per-timestamp view counts, so the "most-viewed
+  portion" is approximated by choosing the highest-viewed movie and having the
+  LLM pick its most dramatic, narration-relevant beats.
 - Captions use ImageMagick `TextClip`; if the policy/font is unavailable the
   editor transparently falls back to Pillow-rendered frames.

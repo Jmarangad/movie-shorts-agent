@@ -26,14 +26,77 @@ class VideoEditError(RuntimeError):
     """Raised when the final Short cannot be rendered."""
 
 
-def _vertical_crop(clip, out_w: int, out_h: int):
-    """Center-crop ``clip`` to the ``out_w:out_h`` (9:16) aspect, then resize."""
+def _clamp_crop_x(x_center: float, new_w: float, frame_w: float) -> float:
+    """Left edge of a crop window centered on ``x_center``, clamped to the frame.
+
+    Pure/testable. ``x_center`` is a pixel coordinate within ``[0, frame_w]``.
+    """
+    if new_w >= frame_w:
+        return 0.0
+    return max(0.0, min(x_center - new_w / 2.0, frame_w - new_w))
+
+
+def focus_center_x(clip_path: Path, sample_interval: float = 0.5, max_frames: int = 40) -> float:
+    """Find the normalized x-centre (0..1) of the in-focus subject in a clip.
+
+    Samples frames and accumulates a per-column sharpness map (Sobel gradient
+    magnitude) across the clip; a moving/cut subject keeps the accumulated
+    centre weighted towards where the most sharpness lives. Falls back to the
+    frame centre (0.5) when OpenCV is unavailable or the clip cannot be read.
+    """
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return 0.5
+
+    cap = cv2.VideoCapture(str(clip_path))
+    if not cap.isOpened():
+        return 0.5
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    step = max(int(fps * sample_interval), 1)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    if width <= 0:
+        cap.release()
+        return 0.5
+
+    col_sharp = np.zeros(width, dtype=np.float64)
+    count = 0
+    idx = 0
+    while count < max_frames:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if idx % step == 0:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+            gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+            mag = cv2.magnitude(gx, gy)
+            col_sharp += mag.mean(axis=0)
+            count += 1
+        idx += 1
+    cap.release()
+
+    total = float(col_sharp.sum())
+    if total <= 0:
+        return 0.5
+    cols = np.arange(width)
+    return float((col_sharp * cols).sum() / total) / width
+
+
+def _vertical_crop(clip, out_w: int, out_h: int, focus_cx: float = 0.5):
+    """Center-crop ``clip`` to the ``out_w:out_h`` (9:16) aspect, then resize.
+
+    For landscape sources the horizontal crop window is centered on the
+    in-focus subject (``focus_cx``, normalized 0..1) instead of the frame
+    centre, so the object of focus stays in the middle of the Short.
+    """
     w, h = clip.w, clip.h
     target_aspect = out_w / out_h
     src_aspect = w / h
     if src_aspect > target_aspect:  # too wide -> narrow horizontal strip
         new_w = h * target_aspect
-        x1 = (w - new_w) / 2
+        x1 = _clamp_crop_x(focus_cx * w, new_w, w)
         cropped = clip.cropped(x1=x1, x2=x1 + new_w, y1=0, y2=h)
     else:  # too tall -> vertical slice
         new_h = w / target_aspect
@@ -212,10 +275,11 @@ def build_short(
     try:
         verticals = []
         for path in clip_paths:
-            source = VideoFileClip(str(path))
+            focus_cx = focus_center_x(path)
+            source = VideoFileClip(str(path), audio=False)
             sources.append(source)
             verticals.append(
-                _vertical_crop(source, settings.output_width, settings.output_height)
+                _vertical_crop(source, settings.output_width, settings.output_height, focus_cx=focus_cx)
             )
 
         montage = concatenate_videoclips(verticals, method="compose")
@@ -254,7 +318,8 @@ def build_short(
             codec="libx264",
             audio_codec="aac",
             audio_bitrate="192k",
-            preset="medium",
+            bitrate="4000k",
+            preset="veryfast",
             threads=2,
             logger=None,
         )

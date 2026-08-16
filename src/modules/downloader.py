@@ -100,16 +100,27 @@ def download_scenes(
     settings: Settings,
     prefix: str = "clip",
 ) -> list[Path]:
-    """Download all scenes sequentially and return the produced clip paths."""
+    """Download all scenes, skipping any that fail, and return the clips.
+
+    A single un-downloadable segment no longer aborts the whole pipeline: the
+    offending scene is logged and skipped, and the montage is built from the
+    clips that did succeed.
+    """
     clips: list[Path] = []
     for index, scene in enumerate(scenes):
         out_path = downloads_dir / f"{prefix}_{index:02d}.mp4"
-        clip = download_clip(
-            video_url,
-            scene,
-            out_path,
-            ffmpeg_binary=settings.ffmpeg_binary,
-            retries=settings.max_download_retries,
-        )
-        clips.append(clip)
+        try:
+            clip = download_clip(
+                video_url,
+                scene,
+                out_path,
+                ffmpeg_binary=settings.ffmpeg_binary,
+                retries=settings.max_download_retries,
+            )
+            clips.append(clip)
+        except DownloadError as exc:
+            logger.warning("skipping failed scene %d [%.1f-%.1f]s: %s", index, scene.start_time, scene.end_time, exc)
+    if not clips:
+        raise DownloadError("no scenes could be downloaded")
+    logger.info("downloaded %d/%d clips", len(clips), len(scenes))
     return clips

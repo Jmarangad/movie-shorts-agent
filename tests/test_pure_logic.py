@@ -14,6 +14,7 @@ from src.modules.downloader import sec_to_ts  # noqa: E402
 from src.modules.transcript_llm import StoryPlanError, parse_story_plan  # noqa: E402
 from src.modules.tts_generator import _compensate_rate  # noqa: E402
 from src.modules.video_editor import (  # noqa: E402
+    _clamp_crop_x,
     allocate_caption_timings,
     sequence_to_fit_duration,
 )
@@ -128,3 +129,24 @@ def test_parse_story_plan_rejects_bad():
             "x",
             settings,
         )
+
+
+def test_clamp_crop_x_center():
+    assert _clamp_crop_x(50.0, 60.0, 100.0) == pytest.approx(20.0)
+    assert _clamp_crop_x(100.0, 60.0, 100.0) == pytest.approx(40.0)
+    assert _clamp_crop_x(0.0, 60.0, 100.0) == pytest.approx(0.0)
+    assert _clamp_crop_x(200.0, 60.0, 100.0) == pytest.approx(40.0)  # beyond right edge
+    assert _clamp_crop_x(50.0, 150.0, 100.0) == 0.0  # window wider than frame
+
+
+def test_used_movies_roundtrip(tmp_path):
+    from main import load_used_movies, mark_movie_used, reset_used_movies
+
+    path = tmp_path / "used.json"
+    assert load_used_movies(path) == set()
+    mark_movie_used(path, "aaa")
+    mark_movie_used(path, "bbb")
+    mark_movie_used(path, "aaa")
+    assert load_used_movies(path) == {"aaa", "bbb"}
+    reset_used_movies(path)
+    assert load_used_movies(path) == set()

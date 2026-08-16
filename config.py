@@ -55,6 +55,25 @@ class Settings(BaseSettings):
     max_scene_seconds: float = Field(default=12.0, ge=1.0)
     max_transcript_chars: int = Field(default=250_000, description="truncate transcript for the LLM")
 
+    # --- Search (Module 1) ------------------------------------------------
+    movie_genres: str = Field(
+        default="thriller,romantic,horror",
+        description="comma-separated genres to search (one query each)",
+    )
+    search_language: str = Field(
+        default="en",
+        description="preferred audio language; only candidates whose language matches are kept",
+    )
+
+    # --- Used-movie tracking (Module 6) -----------------------------------
+    used_movies_path: Path = Field(
+        default=Path("output/used_movies.json"),
+        description="JSON list of video_ids already turned into Shorts",
+    )
+
+    # --- Schedule (Module 6) ----------------------------------------------
+    schedule_interval_hours: float = Field(default=3.0, ge=0.1)
+
     # --- Download / edit (Modules 4-5) ------------------------------------
     target_duration_seconds: int = Field(default=120, ge=10)
     output_dir: Path = Field(default=Path("output"))
@@ -64,7 +83,7 @@ class Settings(BaseSettings):
 
     # --- Captions (Module 5) ----------------------------------------------
     hindi_font: str = Field(
-        default="/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+        default="/usr/share/fonts/truetype/lohit-devanagari/Lohit-Devanagari.ttf",
         description="ImageMagick/PIL font for Devanagari captions",
     )
     caption_font_size: int = Field(default=52)
