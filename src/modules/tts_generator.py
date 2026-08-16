@@ -95,14 +95,17 @@ def fit_rate_to_target(
     text: str,
     out_path: Path,
     settings: Settings,
+    target_seconds: float | None = None,
 ) -> tuple[Path, float]:
     """Synthesise the narration and adjust the rate to hit the target length.
 
     Returns ``(audio_path, duration)``. The first pass uses the configured
     ``tts_rate``; subsequent passes correct the rate from the measured ratio,
-    up to a few attempts.
+    up to a few attempts. ``target_seconds`` overrides
+    ``settings.target_duration_seconds`` (e.g. when the narration must fit the
+    length of the distinct clips, with no repetition).
     """
-    target = float(settings.target_duration_seconds)
+    target = float(target_seconds or settings.target_duration_seconds)
     rate = settings.tts_rate
     best = (out_path, 0.0)
     for attempt in range(3):

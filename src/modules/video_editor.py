@@ -11,7 +11,6 @@ Pipeline:
 from __future__ import annotations
 
 import logging
-import math
 from pathlib import Path
 from typing import Iterable
 
@@ -103,17 +102,6 @@ def _vertical_crop(clip, out_w: int, out_h: int, focus_cx: float = 0.5):
         y1 = (h - new_h) / 2
         cropped = clip.cropped(x1=0, x2=w, y1=y1, y2=y1 + new_h)
     return cropped.resized((int(out_w), int(out_h)))
-
-
-def sequence_to_fit_duration(seq_duration: float, target: float) -> tuple[int, float]:
-    """How many repetitions of a montage are needed to cover ``target``.
-
-    Pure/testable: returns ``(repetitions, fitted_duration)``.
-    """
-    if seq_duration <= 0:
-        return 1, 0.0
-    reps = math.ceil(target / seq_duration)
-    return max(reps, 1), reps * seq_duration
 
 
 def allocate_caption_timings(
@@ -283,12 +271,14 @@ def build_short(
             )
 
         montage = concatenate_videoclips(verticals, method="compose")
-        reps, fitted = sequence_to_fit_duration(montage.duration, audio_duration)
-        if reps > 1:
-            logger.info("repeating montage %d× (%.1fs -> %.1fs)", reps, montage.duration, fitted)
-            montage = concatenate_videoclips([montage] * reps, method="compose")
         if montage.duration > audio_duration:
             montage = montage.subclipped(0, audio_duration)
+        elif montage.duration < audio_duration:
+            logger.warning(
+                "distinct clip timeline (%.1fs) shorter than narration (%.1fs); "
+                "clips are never repeated, so the video ends early",
+                montage.duration, audio_duration,
+            )
 
         base = montage.with_audio(audio)
 

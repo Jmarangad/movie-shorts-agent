@@ -16,7 +16,6 @@ from src.modules.tts_generator import _compensate_rate  # noqa: E402
 from src.modules.video_editor import (  # noqa: E402
     _clamp_crop_x,
     allocate_caption_timings,
-    sequence_to_fit_duration,
 )
 from src.modules.youtube_search import parse_iso_duration  # noqa: E402
 
@@ -24,9 +23,10 @@ from src.modules.youtube_search import parse_iso_duration  # noqa: E402
 def test_settings_defaults():
     s = get_settings()
     assert s.target_script_words == 280
-    assert s.max_scenes == 6
-    assert s.min_scene_seconds == 5.0
-    assert s.max_scene_seconds == 12.0
+    assert s.max_scenes == 8
+    assert s.min_scene_seconds == 10.0
+    assert s.max_scene_seconds == 18.0
+    assert s.movie_genres == "thriller,horror,romantic,survival"
 
 
 def test_parse_iso_duration():
@@ -43,14 +43,6 @@ def test_sec_to_ts():
     assert sec_to_ts(59.9) == "00:01:00"
     assert sec_to_ts(61) == "00:01:01"
     assert sec_to_ts(3661) == "01:01:01"
-
-
-def test_sequence_to_fit_duration():
-    assert sequence_to_fit_duration(30.0, 120.0) == (4, 120.0)
-    assert sequence_to_fit_duration(60.0, 120.0) == (2, 120.0)
-    assert sequence_to_fit_duration(100.0, 120.0) == (2, 200.0)
-    assert sequence_to_fit_duration(130.0, 120.0) == (1, 130.0)
-    assert sequence_to_fit_duration(0.0, 120.0) == (1, 0.0)
 
 
 def test_allocate_caption_timings_proportional():

@@ -12,11 +12,11 @@ clips into a 1080×1920 (9:16) Short with animated Hindi captions.
 
 | # | Module | File | Responsibility |
 |---|--------|------|----------------|
-| 1 | Movie search | `src/modules/youtube_search.py` | YouTube Data API v3, English thriller/romantic/horror genre queries, ranked by views, language-filtered |
+| 1 | Movie search | `src/modules/youtube_search.py` | YouTube Data API v3, English thriller/horror/romantic/survival genre queries, ranked by views, language-filtered |
 | 2 | Transcript + LLM | `src/modules/transcript_llm.py` | timestamped transcript via `youtube-transcript-api`; Gemini/OpenAI/DeepSeek/OpenCode/Ollama → Hindi narration + scene timestamps |
 | 3 | TTS | `src/modules/tts_generator.py` | async `edge-tts` (hi-IN-SwaraNeural), auto rate-fit to ~120 s via ffprobe |
 | 4 | Targeted download | `src/modules/downloader.py` | `yt-dlp --download-sections` (external ffmpeg) fetches only the narration-relevant clips |
-| 5 | Video editing | `src/modules/video_editor.py` | MoviePy: focus-aware 16:9→9:16 crop (keeps the in-focus subject centred), montage loop, captions burned with ImageMagick/PIL |
+| 5 | Video editing | `src/modules/video_editor.py` | MoviePy: focus-aware 16:9→9:16 crop (keeps the in-focus subject centred), each scene plays exactly once, captions burned with ImageMagick/PIL |
 | 6 | Orchestration | `main.py` | CLI, used-movie tracking, 3-hour scheduler, `story_plan.json` + `final_short.mp4` |
 | 7 | Deployment | `Dockerfile` | slim multi-stage image: ffmpeg, OpenCV, ImageMagick (relaxed policy), Deva fonts, non-root |
 | 8 | Compose | `docker-compose.yml` | env-file, output/downloads volumes, host network, `--schedule` restart |
@@ -73,12 +73,12 @@ See `.env.example` for every setting. Key ones:
 |----------|---------|---------|
 | `YOUTUBE_API_KEY` | — | YouTube Data API v3 key (module 1) |
 | `LLM_PROVIDER` | `gemini` | `gemini`, `openai`, `deepseek`, `opencode` or `ollama` (Ollama Cloud: `OLLAMA_API_KEY`, `OLLAMA_BASE_URL=https://ollama.com/v1`, `OLLAMA_MODEL`) |
-| `GENRES` | `thriller,romantic,horror` | genres searched (one query each) |
+| `GENRES` | `thriller,horror,romantic,survival` | genres searched (one query each) |
 | `SEARCH_LANGUAGE` | `en` | preferred audio language filter |
 | `TTS_VOICE` | `hi-IN-SwaraNeural` | edge-tts Hindi voice |
-| `TARGET_DURATION_SECONDS` | `120` | target Short length; TTS auto-fits |
-| `MAX_SCENES` | `6` | max LLM-chosen clips |
-| `MIN/MAX_SCENE_SECONDS` | `5`/`12` | allowed clip lengths |
+| `TARGET_DURATION_SECONDS` | `120` | target Short length; narration fits the distinct clip timeline, so clips are never repeated |
+| `MAX_SCENES` | `8` | max LLM-chosen clips |
+| `MIN/MAX_SCENE_SECONDS` | `10`/`18` | allowed clip lengths |
 | `USED_MOVIES_PATH` | `output/used_movies.json` | registry of movies already used |
 | `SCHEDULE_INTERVAL_HOURS` | `3` | delay between scheduled runs |
 | `HINDI_FONT` | Lohit-Devanagari | caption font path |
@@ -89,11 +89,14 @@ See `.env.example` for every setting. Key ones:
 - Requires a *transcript* (manual or auto-generated) — speech is matched to the
   movie timeline; candidates are walked in view-count order until one works.
 - Search is restricted to English audio (`SEARCH_LANGUAGE=en`) and the genres
-  in `GENRES`; candidates without a declared language are kept as fallback.
+  in `GENRES` (thriller, horror, romantic, survival); candidates without a
+  declared language are kept as fallback.
 - Scene timings are clamped to `[MIN_SCENE_SECONDS, MAX_SCENE_SECONDS]` and to
   the actual video duration, and are tied to the narration beats.
 - The 16:9→9:16 crop centers on the in-focus subject (Sobel sharpness map via
   OpenCV) instead of always the frame centre.
+- Every scene plays exactly once: the narration is fitted to the total length
+  of the downloaded clips, so no clip is ever repeated in the final Short.
 - YouTube does not expose per-timestamp view counts, so the "most-viewed
   portion" is approximated by choosing the highest-viewed movie and having the
   LLM pick its most dramatic, narration-relevant beats.

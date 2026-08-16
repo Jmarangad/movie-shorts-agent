@@ -26,7 +26,7 @@ from src.modules.transcript_llm import (
     fetch_transcript,
     generate_story_plan,
 )
-from src.modules.tts_generator import fit_rate_to_target
+from src.modules.tts_generator import fit_rate_to_target, media_duration
 from src.modules.video_editor import build_short
 from src.modules.youtube_search import MovieCandidate, YouTubeSearchError, search_movies
 
@@ -172,14 +172,7 @@ def run_pipeline(settings: Settings, query: str | None = None, video_id: str | N
         logger.info("dry-run: wrote story_plan.json, stopping before TTS/download/edit")
         return plan_path
 
-    # 3. TTS --------------------------------------------------------------------
-    audio_path = out_dir / "narration.mp3"
-    if audio_path.exists():
-        audio_path.unlink()
-    audio_path, audio_duration = fit_rate_to_target(plan.hindi_script, audio_path, settings)
-    logger.info("narration: %.1fs -> %s", audio_duration, audio_path.name)
-
-    # 4. Targeted clip download --------------------------------------------------
+    # 3. Targeted clip download --------------------------------------------------
     clips = download_scenes(
         candidate.url,
         plan.timestamps,
@@ -188,6 +181,20 @@ def run_pipeline(settings: Settings, query: str | None = None, video_id: str | N
         prefix=candidate.video_id[:8],
     )
     logger.info("downloaded %d clips", len(clips))
+
+    # 4. TTS fitted to the distinct clip timeline --------------------------------
+    # Every scene plays exactly once in the final Short, so the narration is
+    # targeted at the total length of the downloaded clips, never longer.
+    available = sum(media_duration(c, settings.ffprobe_binary) for c in clips)
+    tts_target = min(float(settings.target_duration_seconds), max(available - 1.5, 10.0))
+    logger.info("distinct clip timeline: %.1fs; narration target: %.1fs", available, tts_target)
+    audio_path = out_dir / "narration.mp3"
+    if audio_path.exists():
+        audio_path.unlink()
+    audio_path, audio_duration = fit_rate_to_target(
+        plan.hindi_script, audio_path, settings, target_seconds=tts_target,
+    )
+    logger.info("narration: %.1fs -> %s", audio_duration, audio_path.name)
 
     # 5. Edit --------------------------------------------------------------------
     final_path = out_dir / "final_short.mp4"
