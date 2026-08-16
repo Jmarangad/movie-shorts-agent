@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     downloads_dir: Path = Field(default=Path("downloads"))
     keep_clips: bool = Field(default=False, description="keep downloaded clip files")
     max_download_retries: int = Field(default=3, ge=0)
+    min_clip_motion: float = Field(
+        default=2.5,
+        ge=0.0,
+        description="min mean frame-difference (0..255) for a clip to be kept; "
+        "clips below this are still photos/title cards and are dropped",
+    )
 
     # --- Captions (Module 5) ----------------------------------------------
     hindi_font: str = Field(

@@ -30,12 +30,16 @@ _SYSTEM_PROMPT = (
     "fast-paced Hindi narration and pick the most visually striking scenes.\n"
     "Rules:\n"
     "- hindi_script: 250-300 words of punchy, natural Hindi in Devanagari "
-    "script. End the script with a hook line.\n"
+    "script. Tell the COMPLETE story: the setup, the conflicts, and the "
+    "CLIMAX and ending - reveal how the film concludes (spoilers are expected "
+    "and desired). End the script with a hook line.\n"
     "- timestamps: exactly 4 to {max_scenes} scenes, each {min_scene:.0f} to "
     "{max_scene:.0f} seconds long, in ascending order, all inside the video "
     "duration. Pick the highest-impact visual moments, and each scene must "
     "directly show the on-screen moment the narration is talking about at "
-    "that point (the most-viewed, most dramatic beats of the film).\n"
+    "that point (the most-viewed, most dramatic beats of the film). Include "
+    "at least one scene from the climax / final act, and avoid static title "
+    "cards or photo montages.\n"
     "Return ONLY valid JSON matching this schema:\n"
     '{{"hindi_script": str, '
     '"timestamps": [{{"start_time": float, "end_time": float}}]}}'

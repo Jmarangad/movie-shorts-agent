@@ -1,8 +1,9 @@
 """Module 4: Download only the selected movie segments with yt-dlp.
 
 Uses ``yt-dlp`` with ``--download-sections`` (handled by the external ffmpeg
-downloader) so only the 5-12 second clips chosen by the LLM are fetched --
-never the full movie.
+downloader) so only the short clips chosen by the LLM are fetched -- never the
+full movie. Clips that turn out to be still photos / title cards (no motion)
+are dropped so the final Short shows only real moving footage.
 """
 
 from __future__ import annotations
@@ -22,6 +23,50 @@ _FORMAT = "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b"
 
 class DownloadError(RuntimeError):
     """Raised when a segment clip cannot be downloaded."""
+
+
+def motion_score(clip_path: Path, max_frames: int = 30) -> float:
+    """Mean absolute luminance change between sampled frames (0..255).
+
+    A still photo / title card scores ~0; live footage scores several units or
+    more. Returns ``float("inf")`` when OpenCV is unavailable or the clip
+    cannot be read, which means "keep the clip" (we never drop on failure).
+    """
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return float("inf")
+
+    cap = cv2.VideoCapture(str(clip_path))
+    if not cap.isOpened():
+        return float("inf")
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    step = max(int(fps), 1)  # sample once per second
+    diffs: list[float] = []
+    prev = None
+    idx = 0
+    count = 0
+    while count < max_frames:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if idx % step == 0:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+            if prev is not None:
+                diffs.append(float(np.mean(np.abs(gray - prev))))
+            prev = gray
+            count += 1
+        idx += 1
+    cap.release()
+    if not diffs:
+        return float("inf")
+    return float(np.mean(diffs))
+
+
+def is_static(motion: float, min_motion: float) -> bool:
+    """Return True when a clip's motion score marks it as a still photo."""
+    return motion < min_motion
 
 
 def sec_to_ts(seconds: float) -> str:
@@ -117,9 +162,18 @@ def download_scenes(
                 ffmpeg_binary=settings.ffmpeg_binary,
                 retries=settings.max_download_retries,
             )
-            clips.append(clip)
         except DownloadError as exc:
             logger.warning("skipping failed scene %d [%.1f-%.1f]s: %s", index, scene.start_time, scene.end_time, exc)
+            continue
+        score = motion_score(clip)
+        if is_static(score, settings.min_clip_motion):
+            logger.warning(
+                "skipping static clip %s (motion %.2f < %.2f): still photo / title card",
+                clip.name, score, settings.min_clip_motion,
+            )
+            clip.unlink(missing_ok=True)
+            continue
+        clips.append(clip)
     if not clips:
         raise DownloadError("no scenes could be downloaded")
     logger.info("downloaded %d/%d clips", len(clips), len(scenes))

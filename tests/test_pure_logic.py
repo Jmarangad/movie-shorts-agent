@@ -10,8 +10,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import Settings, get_settings  # noqa: E402
-from src.modules.downloader import sec_to_ts  # noqa: E402
-from src.modules.transcript_llm import StoryPlanError, parse_story_plan  # noqa: E402
+from src.modules.downloader import is_static, sec_to_ts  # noqa: E402
+from src.modules.transcript_llm import StoryPlanError, _SYSTEM_PROMPT, parse_story_plan  # noqa: E402
 from src.modules.tts_generator import _compensate_rate  # noqa: E402
 from src.modules.video_editor import (  # noqa: E402
     _clamp_crop_x,
@@ -56,6 +56,24 @@ def test_has_english_marker():
     assert has_english_marker("Awesome Action Movie in English")
     assert not has_english_marker("Entertainment | Full Movie | Akshay Kumar")
     assert not has_english_marker("A Quiet Place (2018) Full Movie")
+
+
+def test_is_static():
+    assert is_static(0.0, 2.5)
+    assert is_static(1.2, 2.5)
+    assert not is_static(4.0, 2.5)
+    assert not is_static(2.5, 2.5)
+
+
+def test_settings_static_motion_default():
+    s = get_settings()
+    assert s.min_clip_motion == 2.5
+
+
+def test_system_prompt_covers_climax():
+    assert "CLIMAX" in _SYSTEM_PROMPT
+    assert "climax" in _SYSTEM_PROMPT
+    assert "static title" in _SYSTEM_PROMPT
 
 
 def test_sec_to_ts():

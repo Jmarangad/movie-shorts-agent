@@ -83,6 +83,7 @@ See `.env.example` for every setting. Key ones:
 | `SCHEDULE_INTERVAL_HOURS` | `3` | delay between scheduled runs |
 | `HINDI_FONT` | Lohit-Devanagari | caption font path |
 | `KEEP_CLIPS` | `false` | keep downloaded clip files |
+| `MIN_CLIP_MOTION` | `2.5` | drop clips below this motion score (still photos / title cards) |
 
 ## Notes / limitations
 
@@ -95,6 +96,8 @@ See `.env.example` for every setting. Key ones:
   the actual video duration, and are tied to the narration beats.
 - The 16:9→9:16 crop centers on the in-focus subject (Sobel sharpness map via
   OpenCV) instead of always the frame centre.
+- Narrations tell the full story including the climax/ending; the LLM also
+  picks at least one scene from the climax and avoids static title cards.
 - Every scene plays exactly once: the narration is fitted to the total length
   of the downloaded clips, so no clip is ever repeated in the final Short.
 - YouTube does not expose per-timestamp view counts, so the "most-viewed
