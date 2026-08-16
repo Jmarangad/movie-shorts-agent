@@ -114,8 +114,8 @@ def _select_candidate(
         max_results=5,
         language=settings.search_language,
     )
-    # Most-viewed first, but never reuse a movie we already turned into a Short.
-    candidates.sort(key=lambda c: c.view_count, reverse=True)
+    # search_movies already ranks English-marked titles above view count;
+    # iterate in that order, skipping movies we already turned into a Short.
     for cand in candidates:
         if cand.video_id in used:
             logger.info("skipping already-used movie %s (%s)", cand.video_id, cand.title)

@@ -17,6 +17,41 @@ logger = logging.getLogger(__name__)
 _FILM_CATEGORY_ID = "1"
 _ISO_DURATION_RE = re.compile(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?")
 
+# A movie counts as "English" when its title is free of Devanagari script and
+# of common markers for Hindi/Indian dubs. The API's language fields are often
+# missing or wrong, so the title heuristic is the primary gate.
+_DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
+_HINDI_MARKERS = ("hindi", "hindî", "bollywood", "dubbed", "dub ", "हिंदी", "हिन्दी")
+_REGIONAL_MARKERS = (
+    "malayalam", "tamil", "telugu", "punjabi", "bengali", "kannada",
+    "marathi", "gujarati", "oriya", "assamese", "bhojpuri",
+)
+# Explicit markers that a title advertises English audio, e.g. "movie in
+# English HD". Candidates carrying these are ranked above pure view counts,
+# because Bollywood uploads with English-letter titles dominate YouTube views.
+_ENGLISH_MARKERS = (
+    "in english", "english movie", "english full", "english hd",
+    "english version", "english 4k", "movie english",
+)
+
+
+def is_english_candidate(title: str) -> bool:
+    """Return True when the movie title looks like an English-language film."""
+    lowered = title.lower()
+    if _DEVANAGARI_RE.search(title):
+        return False
+    if any(m in lowered for m in _HINDI_MARKERS):
+        return False
+    if any(m in lowered for m in _REGIONAL_MARKERS):
+        return False
+    return True
+
+
+def has_english_marker(title: str) -> bool:
+    """Return True when the title explicitly advertises English audio."""
+    lowered = title.lower()
+    return any(m in lowered for m in _ENGLISH_MARKERS)
+
 
 class YouTubeSearchError(RuntimeError):
     """Raised when the YouTube Data API cannot be queried."""
@@ -94,7 +129,11 @@ def search_movies(
         YouTubeSearchError: on API/network failures or a missing API key.
     """
     client = _build_client(api_key)
-    queries = [f"{g} movie full movie" for g in genres] if genres else [query or "full movie"]
+    queries = (
+        [f"{g} english movie full movie" for g in genres]
+        if genres
+        else [f"{query or 'full movie'} english movie"]
+    )
 
     seen: dict[str, dict[str, Any]] = {}
     try:
@@ -171,7 +210,20 @@ def search_movies(
         if matching:
             candidates = matching
 
-    candidates.sort(key=lambda c: c.view_count, reverse=True)
+    # Primary gate: only English-looking titles. Falls back to the
+    # language-filtered set only when nothing survives (rare).
+    english = [c for c in candidates if is_english_candidate(c.title)]
+    if english:
+        candidates = english
+    elif candidates:
+        logger.warning("no English-titled candidates; keeping %d language-filtered ones", len(candidates))
+
+    # English-marked titles rank above view count, so the agent prefers
+    # clearly-English movies (e.g. "Movie in English HD") over Bollywood
+    # uploads that happen to have English-letter titles.
+    candidates.sort(
+        key=lambda c: (not has_english_marker(c.title), -c.view_count)
+    )
     for c in candidates:
         logger.info(
             "candidate: %s (%s) views=%d lang=%r url=%s",

@@ -17,7 +17,11 @@ from src.modules.video_editor import (  # noqa: E402
     _clamp_crop_x,
     allocate_caption_timings,
 )
-from src.modules.youtube_search import parse_iso_duration  # noqa: E402
+from src.modules.youtube_search import (  # noqa: E402
+    has_english_marker,
+    is_english_candidate,
+    parse_iso_duration,
+)
 
 
 def test_settings_defaults():
@@ -36,6 +40,22 @@ def test_parse_iso_duration():
     assert parse_iso_duration("PT30S") == 30
     assert parse_iso_duration("") == 0
     assert parse_iso_duration("garbage") == 0
+
+
+def test_is_english_candidate():
+    assert is_english_candidate("The Silence of the Lambs | Full Movie")
+    assert is_english_candidate("A Quiet Place (2018) Full English Movie")
+    assert not is_english_candidate("Jai Vikraanta Hindi Full Movie")
+    assert not is_english_candidate("रहना है तेरे दिल में हिंदी मूवी")
+    assert not is_english_candidate("Avengers Endgame Hindi Dubbed Movie")
+    assert not is_english_candidate("Theri Tamil Full Movie")
+
+
+def test_has_english_marker():
+    assert has_english_marker("Horror Movie Lost at Sea | Full Movies in English HD")
+    assert has_english_marker("Awesome Action Movie in English")
+    assert not has_english_marker("Entertainment | Full Movie | Akshay Kumar")
+    assert not has_english_marker("A Quiet Place (2018) Full Movie")
 
 
 def test_sec_to_ts():
