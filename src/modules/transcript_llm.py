@@ -5,7 +5,7 @@ Two responsibilities:
 1. ``fetch_transcript`` pulls timestamped (auto-generated or manual) subtitles
    via ``youtube-transcript-api``.
 2. ``generate_story_plan`` asks an LLM (Google Gemini via ``google-genai``,
-   or OpenAI via the ``openai`` package) for a ~250-300 word Hindi narration
+   or OpenAI via the ``openai`` package) for a ~220-word Hindi narration
    plus 4-6 key visual scenes with start/end times in seconds.
 """
 
@@ -25,14 +25,20 @@ logger = logging.getLogger(__name__)
 _SENTENCE_SPLIT_RE = re.compile(r"[।\.!\?…]+")
 
 _SYSTEM_PROMPT = (
-    "You are an expert Hindi screenplay writer for 120-second YouTube Shorts. "
-    "Given the timestamped transcript of a full-length movie, you produce a "
-    "fast-paced Hindi narration and pick the most visually striking scenes.\n"
+    "You are a skilled Hindi storyteller writing the voiceover for a 120-second "
+    "YouTube Short about a full-length movie. Given the timestamped transcript, "
+    "you write a natural, human narration and pick the most visually striking scenes.\n"
     "Rules:\n"
-    "- hindi_script: 250-300 words of punchy, natural Hindi in Devanagari "
-    "script. Tell the COMPLETE story: the setup, the conflicts, and the "
-    "CLIMAX and ending - reveal how the film concludes (spoilers are expected "
-    "and desired). End the script with a hook line.\n"
+    "- hindi_script: around {target_words} words of natural, conversational Hindi "
+    "in Devanagari script. Write the way a real storyteller talks to a friend: "
+    "short punchy sentences, casual yet vivid phrasing, occasional rhetorical "
+    "questions, and a rhythm that breathes. Avoid stiff, literal or list-like "
+    "narration.\n"
+    "- Tell the COMPLETE story: the setup, the conflicts, and the CLIMAX and "
+    "ending - reveal how the film concludes (spoilers are expected and desired). "
+    "Narrate the climax DRAMATICALLY: build tension, use vivid language and "
+    "beat-pauses (e.g. '\u0914\u0930 \u092b\u093f\u0930...', '\u0909\u0938\u0940 \u092a\u0932...'), "
+    "and make the emotional payoff land. End the script with a hook line.\n"
     "- timestamps: exactly 4 to {max_scenes} scenes, each {min_scene:.0f} to "
     "{max_scene:.0f} seconds long, in ascending order, all inside the video "
     "duration. Pick the highest-impact visual moments, and each scene must "
@@ -154,6 +160,7 @@ def fetch_transcript(
 # --------------------------------------------------------------------------- #
 def _build_prompt(transcript: str, settings: Settings) -> str:
     system = _SYSTEM_PROMPT.format(
+        target_words=settings.target_script_words,
         max_scenes=settings.max_scenes,
         min_scene=settings.min_scene_seconds,
         max_scene=settings.max_scene_seconds,

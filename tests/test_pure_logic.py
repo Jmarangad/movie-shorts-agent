@@ -27,7 +27,7 @@ from src.modules.youtube_search import (  # noqa: E402
 
 def test_settings_defaults():
     s = get_settings()
-    assert s.target_script_words == 280
+    assert s.target_script_words == 220
     assert s.max_scenes == 8
     assert s.min_scene_seconds == 10.0
     assert s.max_scene_seconds == 18.0
@@ -100,9 +100,10 @@ def test_allocate_caption_timings_empty():
 
 
 def test_compensate_rate():
-    assert _compensate_rate("+0%", ratio=2.0) == "-100%".replace("-100%", "-60%")  # clamped
+    assert _compensate_rate("+0%", ratio=2.0) == "-20%"  # clamped
     assert _compensate_rate("+0%", ratio=1.0) == "+0%"
-    assert _compensate_rate("+0%", ratio=0.5) == "+50%"
+    assert _compensate_rate("+0%", ratio=0.5) == "+20%"  # clamped
+    assert _compensate_rate("+0%", ratio=0.8) == "+20%"
 
 
 def test_parse_story_plan_valid():
@@ -181,6 +182,15 @@ def test_used_movies_roundtrip(tmp_path):
     assert load_used_movies(path) == {"aaa", "bbb"}
     reset_used_movies(path)
     assert load_used_movies(path) == set()
+
+
+def test_has_existing_clips(tmp_path):
+    from main import _has_existing_clips
+
+    s = Settings(downloads_dir=tmp_path)
+    assert not _has_existing_clips(s, "abcdefghijk")
+    (tmp_path / "abcdefgh_00.mp4").write_bytes(b"x")
+    assert _has_existing_clips(s, "abcdefghijk")
 
 
 def test_backup_outputs_copies_and_prunes(tmp_path):

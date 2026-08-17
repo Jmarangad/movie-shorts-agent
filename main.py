@@ -131,6 +131,17 @@ def backup_outputs(
     return dest
 
 
+def _has_existing_clips(settings: Settings, video_id: str) -> bool:
+    """Return True when clips for ``video_id`` already exist in the downloads dir.
+
+    Acts as a second guard (besides ``used_movies.json``) so a movie whose
+    clips were already downloaded is never re-fetched -- even after a
+    ``--reset-used`` while old clips are still on disk.
+    """
+    prefix = video_id[:8]
+    return any(settings.downloads_dir.glob(f"{prefix}_*.mp4"))
+
+
 def _select_candidate(
     settings: Settings,
     used: set[str],
@@ -163,10 +174,14 @@ def _select_candidate(
         language=settings.search_language,
     )
     # search_movies already ranks English-marked titles above view count;
-    # iterate in that order, skipping movies we already turned into a Short.
+    # iterate in that order, skipping movies we already turned into a Short
+    # or whose clips we already downloaded.
     for cand in candidates:
         if cand.video_id in used:
             logger.info("skipping already-used movie %s (%s)", cand.video_id, cand.title)
+            continue
+        if _has_existing_clips(settings, cand.video_id):
+            logger.info("skipping %s (%s): clips already downloaded", cand.video_id, cand.title)
             continue
         logger.info(
             "trying transcript for %s (%s, %.0f views) %s",

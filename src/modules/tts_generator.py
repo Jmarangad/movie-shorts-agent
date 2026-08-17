@@ -18,7 +18,8 @@ from config import Settings
 logger = logging.getLogger(__name__)
 
 _TARGET_TOLERANCE_S = 3.0
-_RATE_CLAMP_PERCENT = 60
+# Narrow band keeps the voice natural; edge-tts beyond ~±20% sounds robotic.
+_RATE_CLAMP_PERCENT = 20
 
 
 class TTSError(RuntimeError):

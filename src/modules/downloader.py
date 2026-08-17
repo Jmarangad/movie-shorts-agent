@@ -154,6 +154,10 @@ def download_scenes(
     clips: list[Path] = []
     for index, scene in enumerate(scenes):
         out_path = downloads_dir / f"{prefix}_{index:02d}.mp4"
+        if out_path.exists() and out_path.stat().st_size > 0:
+            logger.info("clip %s already downloaded; reusing without re-download", out_path.name)
+            clips.append(out_path)
+            continue
         try:
             clip = download_clip(
                 video_url,

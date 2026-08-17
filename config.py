@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     tts_rate: str = Field(default="+0%", description="initial edge-tts rate")
 
     # --- Story plan (Module 2) --------------------------------------------
-    target_script_words: int = Field(default=280, ge=50, le=2000)
+    target_script_words: int = Field(default=220, ge=50, le=2000)
     max_scenes: int = Field(default=8, ge=1, le=16)
     min_scene_seconds: float = Field(default=10.0, ge=1.0)
     max_scene_seconds: float = Field(default=18.0, ge=1.0)
