@@ -25,8 +25,9 @@ logger = logging.getLogger(__name__)
 _SENTENCE_SPLIT_RE = re.compile(r"[।\.!\?…]+")
 
 _SYSTEM_PROMPT = (
-    "You are a skilled Hindi storyteller writing the voiceover for a 120-second "
-    "YouTube Short about a full-length movie. Given the timestamped transcript, "
+    "You are a skilled Hindi storyteller writing the voiceover for a "
+    "{target_seconds}-second YouTube Short about a full-length movie. Given the "
+    "timestamped transcript, "
     "you write a natural, human narration and pick the most visually striking scenes.\n"
     "Rules:\n"
     "- hindi_script: around {target_words} words of natural, conversational Hindi "
@@ -160,6 +161,7 @@ def fetch_transcript(
 # --------------------------------------------------------------------------- #
 def _build_prompt(transcript: str, settings: Settings) -> str:
     system = _SYSTEM_PROMPT.format(
+        target_seconds=settings.target_duration_seconds,
         target_words=settings.target_script_words,
         max_scenes=settings.max_scenes,
         min_scene=settings.min_scene_seconds,

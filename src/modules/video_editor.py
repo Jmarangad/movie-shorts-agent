@@ -11,6 +11,8 @@ Pipeline:
 from __future__ import annotations
 
 import logging
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Iterable
 
@@ -81,6 +83,45 @@ def focus_center_x(clip_path: Path, sample_interval: float = 0.5, max_frames: in
         return 0.5
     cols = np.arange(width)
     return float((col_sharp * cols).sum() / total) / width
+
+
+def _normalize_clip(
+    clip_path: Path,
+    tmp_dir: Path,
+    ffmpeg_binary: str,
+    max_width: int = 1920,
+    fps: int = 24,
+) -> Path:
+    """Transcode a source clip to a safe 1080p-ish, CFR MP4 for MoviePy.
+
+    4K sources (or clips with broken edit lists / variable frame rates) make
+    MoviePy's ffmpeg reader miss frames -- it falls back to "last valid
+    frame", which freezes the Short. Normalising to a bounded width with a
+    constant frame rate avoids that entirely and speeds up rendering.
+    """
+    out_path = tmp_dir / f"{clip_path.stem}_n.mp4"
+    if out_path.exists():
+        return out_path
+    scale = f"scale='min({max_width},iw)':-2"
+    proc = subprocess.run(
+        [
+            ffmpeg_binary, "-y", "-i", str(clip_path),
+            "-vf", scale, "-r", str(fps),
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+            "-an", "-movflags", "+faststart",
+            str(out_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0 or not out_path.exists():
+        logger.warning(
+            "clip normalization failed (%s); using raw source",
+            proc.stderr.strip().splitlines()[-1][:160] if proc.stderr else "unknown",
+        )
+        return clip_path
+    return out_path
 
 
 def _vertical_crop(clip, out_w: int, out_h: int, focus_cx: float = 0.5):
@@ -262,57 +303,64 @@ def build_short(
     sources = []
     try:
         verticals = []
-        for path in clip_paths:
-            focus_cx = focus_center_x(path)
-            source = VideoFileClip(str(path), audio=False)
-            sources.append(source)
-            verticals.append(
-                _vertical_crop(source, settings.output_width, settings.output_height, focus_cx=focus_cx)
-            )
-
-        montage = concatenate_videoclips(verticals, method="compose")
-        if montage.duration > audio_duration:
-            montage = montage.subclipped(0, audio_duration)
-        elif montage.duration < audio_duration:
-            logger.warning(
-                "distinct clip timeline (%.1fs) shorter than narration (%.1fs); "
-                "clips are never repeated, so the video ends early",
-                montage.duration, audio_duration,
-            )
-
-        base = montage.with_audio(audio)
-
-        sentences = story.sentences
-        caption_clips: list = []
-        if sentences:
-            timings = allocate_caption_timings(sentences, audio_duration)
-            for sentence, (start, end) in zip(sentences, timings):
-                caption_clips.append(
-                    _caption_clip(
-                        sentence, start, end - start,
-                        settings.output_width, settings.output_height, settings,
-                    )
+        with tempfile.TemporaryDirectory(prefix="motion_") as tmp:
+            tmp_dir = Path(tmp)
+            for path in clip_paths:
+                focus_cx = focus_center_x(path)
+                norm = _normalize_clip(
+                    path, tmp_dir, settings.ffmpeg_binary,
+                    max_width=max(settings.output_width, 1920),
+                    fps=settings.output_fps,
+                )
+                source = VideoFileClip(str(norm), audio=False)
+                sources.append(source)
+                verticals.append(
+                    _vertical_crop(source, settings.output_width, settings.output_height, focus_cx=focus_cx)
                 )
 
-        final = CompositeVideoClip(
-            [base] + caption_clips, size=(settings.output_width, settings.output_height)
-        )
+            montage = concatenate_videoclips(verticals, method="compose")
+            if montage.duration > audio_duration:
+                montage = montage.subclipped(0, audio_duration)
+            elif montage.duration < audio_duration:
+                logger.warning(
+                    "distinct clip timeline (%.1fs) shorter than narration (%.1fs); "
+                    "clips are never repeated, so the video ends early",
+                    montage.duration, audio_duration,
+                )
 
-        logger.info(
-            "rendering %s (%d×%d, %.1fs)",
-            output_path.name, settings.output_width, settings.output_height, final.duration,
-        )
-        final.write_videofile(
-            str(output_path),
-            fps=settings.output_fps,
-            codec="libx264",
-            audio_codec="aac",
-            audio_bitrate="192k",
-            bitrate="4000k",
-            preset="veryfast",
-            threads=2,
-            logger=None,
-        )
+            base = montage.with_audio(audio)
+
+            sentences = story.sentences
+            caption_clips: list = []
+            if sentences:
+                timings = allocate_caption_timings(sentences, audio_duration)
+                for sentence, (start, end) in zip(sentences, timings):
+                    caption_clips.append(
+                        _caption_clip(
+                            sentence, start, end - start,
+                            settings.output_width, settings.output_height, settings,
+                        )
+                    )
+
+            final = CompositeVideoClip(
+                [base] + caption_clips, size=(settings.output_width, settings.output_height)
+            )
+
+            logger.info(
+                "rendering %s (%d×%d, %.1fs)",
+                output_path.name, settings.output_width, settings.output_height, final.duration,
+            )
+            final.write_videofile(
+                str(output_path),
+                fps=settings.output_fps,
+                codec="libx264",
+                audio_codec="aac",
+                audio_bitrate="192k",
+                bitrate="4000k",
+                preset="veryfast",
+                threads=2,
+                logger=None,
+            )
     finally:
         for source in sources:
             source.close()
