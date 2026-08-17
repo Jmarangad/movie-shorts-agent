@@ -25,6 +25,25 @@ class DownloadError(RuntimeError):
     """Raised when a segment clip cannot be downloaded."""
 
 
+def is_decodable(clip_path: Path, ffmpeg_binary: str = "ffmpeg") -> bool:
+    """Return True when the clip's first frame actually decodes.
+
+    A corrupt download can have a valid size and moov atom yet fail to
+    decode (e.g. a 4K source cut mid-stream). MoviePy would then crash on
+    the whole render, so we verify real decodability right after download.
+    """
+    proc = subprocess.run(
+        [
+            ffmpeg_binary, "-v", "error", "-i", str(clip_path),
+            "-frames:v", "1", "-f", "null", "-",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.returncode == 0
+
+
 def motion_score(clip_path: Path, max_frames: int = 30) -> float:
     """Mean absolute luminance change between sampled frames (0..255).
 
@@ -112,25 +131,30 @@ def download_clip(
     ffmpeg_binary: str = "ffmpeg",
     retries: int = 3,
 ) -> Path:
-    """Download a single segment and verify the clip exists and is non-empty."""
+    """Download a single segment and verify the clip exists, is non-empty and decodes."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = _ytdlp_command(video_url, scene.start_time, scene.end_time, out_path, ffmpeg_binary)
     last_error: str | None = None
     for attempt in range(1, retries + 1):
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if proc.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
-            logger.info(
-                "clip %s [%.1f-%.1f] -> %s (%.1f KB)",
-                Path(video_url).name if video_url.endswith(".mp4") else video_url.split("=")[-1][:8],
-                scene.start_time, scene.end_time, out_path.name,
-                out_path.stat().st_size / 1024,
+            if is_decodable(out_path, ffmpeg_binary):
+                logger.info(
+                    "clip %s [%.1f-%.1f] -> %s (%.1f KB)",
+                    Path(video_url).name if video_url.endswith(".mp4") else video_url.split("=")[-1][:8],
+                    scene.start_time, scene.end_time, out_path.name,
+                    out_path.stat().st_size / 1024,
+                )
+                return out_path
+            last_error = f"downloaded file is corrupt (cannot decode): {out_path.name}"
+            logger.warning("attempt %d/%d %s; retrying", attempt, retries, last_error)
+            out_path.unlink(missing_ok=True)
+        else:
+            last_error = proc.stderr.strip() or proc.stdout.strip() or "unknown error"
+            logger.warning(
+                "download attempt %d/%d failed for %s: %s",
+                attempt, retries, out_path.name, last_error[-300:],
             )
-            return out_path
-        last_error = proc.stderr.strip() or proc.stdout.strip() or "unknown error"
-        logger.warning(
-            "download attempt %d/%d failed for %s: %s",
-            attempt, retries, out_path.name, last_error[-300:],
-        )
         if attempt < retries:
             time.sleep(2 * attempt)
     raise DownloadError(
@@ -154,7 +178,7 @@ def download_scenes(
     clips: list[Path] = []
     for index, scene in enumerate(scenes):
         out_path = downloads_dir / f"{prefix}_{index:02d}.mp4"
-        if out_path.exists() and out_path.stat().st_size > 0:
+        if out_path.exists() and out_path.stat().st_size > 0 and is_decodable(out_path, settings.ffmpeg_binary):
             logger.info("clip %s already downloaded; reusing without re-download", out_path.name)
             clips.append(out_path)
             continue

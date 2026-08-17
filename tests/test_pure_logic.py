@@ -27,11 +27,11 @@ from src.modules.youtube_search import (  # noqa: E402
 
 def test_settings_defaults():
     s = get_settings()
-    assert s.target_script_words == 400
-    assert s.max_scenes == 12
-    assert s.min_scene_seconds == 10.0
-    assert s.max_scene_seconds == 18.0
-    assert s.target_duration_seconds == 180
+    assert s.target_script_words == 360
+    assert s.max_scenes == 30
+    assert s.min_scene_seconds == 5.0
+    assert s.max_scene_seconds == 5.0
+    assert s.target_duration_seconds == 150
     assert s.movie_genres == "thriller,horror,romantic,survival"
 
 

@@ -49,10 +49,10 @@ class Settings(BaseSettings):
     tts_rate: str = Field(default="+0%", description="initial edge-tts rate")
 
     # --- Story plan (Module 2) --------------------------------------------
-    target_script_words: int = Field(default=400, ge=50, le=2000)
-    max_scenes: int = Field(default=12, ge=1, le=16)
-    min_scene_seconds: float = Field(default=10.0, ge=1.0)
-    max_scene_seconds: float = Field(default=18.0, ge=1.0)
+    target_script_words: int = Field(default=360, ge=50, le=2000)
+    max_scenes: int = Field(default=30, ge=1, le=40)
+    min_scene_seconds: float = Field(default=5.0, ge=1.0)
+    max_scene_seconds: float = Field(default=5.0, ge=1.0)
     max_transcript_chars: int = Field(default=250_000, description="truncate transcript for the LLM")
 
     # --- Search (Module 1) ------------------------------------------------
@@ -85,11 +85,11 @@ class Settings(BaseSettings):
     schedule_interval_hours: float = Field(default=3.0, ge=0.1)
 
     # --- Download / edit (Modules 4-5) ------------------------------------
-    target_duration_seconds: int = Field(default=180, ge=10)
+    target_duration_seconds: int = Field(default=150, ge=10)
     output_dir: Path = Field(default=Path("output"))
     downloads_dir: Path = Field(default=Path("downloads"))
     keep_clips: bool = Field(default=False, description="keep downloaded clip files")
-    max_download_retries: int = Field(default=3, ge=0)
+    max_download_retries: int = Field(default=5, ge=0)
     min_clip_motion: float = Field(
         default=2.5,
         ge=0.0,

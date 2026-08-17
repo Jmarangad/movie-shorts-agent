@@ -85,28 +85,66 @@ def focus_center_x(clip_path: Path, sample_interval: float = 0.5, max_frames: in
     return float((col_sharp * cols).sum() / total) / width
 
 
-def _normalize_clip(
-    clip_path: Path,
-    tmp_dir: Path,
-    ffmpeg_binary: str,
-    max_width: int = 1920,
-    fps: int = 24,
-) -> Path:
-    """Transcode a source clip to a safe 1080p-ish, CFR MP4 for MoviePy.
+def _probe_dims(path: Path, ffprobe_binary: str) -> tuple[int, int] | None:
+    """Return (width, height) of the video stream, or None if it cannot be read."""
+    proc = subprocess.run(
+        [
+            ffprobe_binary, "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    parts = proc.stdout.strip().split(",")
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
 
-    4K sources (or clips with broken edit lists / variable frame rates) make
-    MoviePy's ffmpeg reader miss frames -- it falls back to "last valid
-    frame", which freezes the Short. Normalising to a bounded width with a
-    constant frame rate avoids that entirely and speeds up rendering.
+
+def _portrait_transcode(
+    clip_path: Path,
+    out_path: Path,
+    ffmpeg_binary: str,
+    ffprobe_binary: str,
+    out_w: int,
+    out_h: int,
+    focus_cx: float = 0.5,
+    fps: int = 24,
+) -> Path | None:
+    """Transcode a clip to a portrait 9:16 CFR MP4 via ffmpeg (low memory).
+
+    Unlike building a MoviePy montage from many open clips at once, this
+    renders each clip to a small 1080x1920 file on disk (streaming through
+    ffmpeg) so the final step only opens a single concatenated video.
+    Returns ``None`` when the source cannot be decoded at all.
     """
-    out_path = tmp_dir / f"{clip_path.stem}_n.mp4"
     if out_path.exists():
         return out_path
-    scale = f"scale='min({max_width},iw)':-2"
+    dims = _probe_dims(clip_path, ffprobe_binary)
+    if dims is None:
+        return None
+    w, h = dims
+    target_aspect = out_w / out_h
+    src_aspect = w / h
+    if src_aspect > target_aspect:  # too wide -> narrow horizontal strip
+        new_w = h * target_aspect
+        x1 = _clamp_crop_x(focus_cx * w, new_w, w)
+        vf = f"crop={new_w}:{h}:{x1}:0,scale={out_w}:{out_h}"
+    else:  # too tall -> vertical slice
+        new_h = w / target_aspect
+        y1 = (h - new_h) / 2
+        vf = f"crop={w}:{new_h}:0:{y1},scale={out_w}:{out_h}"
+
     proc = subprocess.run(
         [
             ffmpeg_binary, "-y", "-i", str(clip_path),
-            "-vf", scale, "-r", str(fps),
+            "-vf", vf, "-r", str(fps),
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
             "-an", "-movflags", "+faststart",
             str(out_path),
@@ -117,32 +155,12 @@ def _normalize_clip(
     )
     if proc.returncode != 0 or not out_path.exists():
         logger.warning(
-            "clip normalization failed (%s); using raw source",
+            "clip normalization failed (%s); skipping clip %s",
             proc.stderr.strip().splitlines()[-1][:160] if proc.stderr else "unknown",
+            clip_path.name,
         )
-        return clip_path
+        return None
     return out_path
-
-
-def _vertical_crop(clip, out_w: int, out_h: int, focus_cx: float = 0.5):
-    """Center-crop ``clip`` to the ``out_w:out_h`` (9:16) aspect, then resize.
-
-    For landscape sources the horizontal crop window is centered on the
-    in-focus subject (``focus_cx``, normalized 0..1) instead of the frame
-    centre, so the object of focus stays in the middle of the Short.
-    """
-    w, h = clip.w, clip.h
-    target_aspect = out_w / out_h
-    src_aspect = w / h
-    if src_aspect > target_aspect:  # too wide -> narrow horizontal strip
-        new_w = h * target_aspect
-        x1 = _clamp_crop_x(focus_cx * w, new_w, w)
-        cropped = clip.cropped(x1=x1, x2=x1 + new_w, y1=0, y2=h)
-    else:  # too tall -> vertical slice
-        new_h = w / target_aspect
-        y1 = (h - new_h) / 2
-        cropped = clip.cropped(x1=0, x2=w, y1=y1, y2=y1 + new_h)
-    return cropped.resized((int(out_w), int(out_h)))
 
 
 def allocate_caption_timings(
@@ -286,7 +304,6 @@ def build_short(
             AudioFileClip,
             CompositeVideoClip,
             VideoFileClip,
-            concatenate_videoclips,
         )
     except ImportError as exc:  # pragma: no cover
         raise VideoEditError("moviepy is not installed") from exc
@@ -302,23 +319,41 @@ def build_short(
 
     sources = []
     try:
-        verticals = []
         with tempfile.TemporaryDirectory(prefix="motion_") as tmp:
             tmp_dir = Path(tmp)
-            for path in clip_paths:
+            portrait_paths = []
+            for i, path in enumerate(clip_paths):
                 focus_cx = focus_center_x(path)
-                norm = _normalize_clip(
-                    path, tmp_dir, settings.ffmpeg_binary,
-                    max_width=max(settings.output_width, 1920),
-                    fps=settings.output_fps,
+                out = tmp_dir / f"{i:03d}_{path.stem}_v.mp4"
+                pt = _portrait_transcode(
+                    path, out, settings.ffmpeg_binary, settings.ffprobe_binary,
+                    settings.output_width, settings.output_height, focus_cx, settings.output_fps,
                 )
-                source = VideoFileClip(str(norm), audio=False)
-                sources.append(source)
-                verticals.append(
-                    _vertical_crop(source, settings.output_width, settings.output_height, focus_cx=focus_cx)
-                )
+                if pt is None:
+                    logger.warning("skipping undecodable clip %s", path.name)
+                    continue
+                portrait_paths.append(pt)
 
-            montage = concatenate_videoclips(verticals, method="compose")
+            if not portrait_paths:
+                raise VideoEditError("no clips survived normalization")
+
+            list_file = tmp_dir / "concat.txt"
+            list_file.write_text("".join(f"file '{p.name}'\n" for p in portrait_paths))
+            montage_path = tmp_dir / "montage.mp4"
+            proc = subprocess.run(
+                [
+                    settings.ffmpeg_binary, "-y", "-f", "concat", "-safe", "0",
+                    "-i", str(list_file), "-c", "copy", str(montage_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if proc.returncode != 0 or not montage_path.exists():
+                raise VideoEditError("could not build ffmpeg montage")
+
+            montage = VideoFileClip(str(montage_path), audio=False)
+            sources.append(montage)
             if montage.duration > audio_duration:
                 montage = montage.subclipped(0, audio_duration)
             elif montage.duration < audio_duration:

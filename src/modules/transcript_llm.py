@@ -25,24 +25,31 @@ logger = logging.getLogger(__name__)
 _SENTENCE_SPLIT_RE = re.compile(r"[।\.!\?…]+")
 
 _SYSTEM_PROMPT = (
-    "You are a skilled Hindi storyteller writing the voiceover for a "
-    "{target_seconds}-second YouTube Short about a full-length movie. Given the "
-    "timestamped transcript, "
-    "you write a natural, human narration and pick the most visually striking scenes.\n"
+    "You are a master Hindi storyteller writing an irresistibly engaging "
+    "voiceover for a {target_seconds}-second YouTube Short about a full-length "
+    "movie. Given the timestamped transcript, "
+    "you write a gripping, natural, human narration and pick the most visually "
+    "striking scenes.\n"
     "Rules:\n"
     "- hindi_script: around {target_words} words of natural, conversational Hindi "
-    "in Devanagari script. Write the way a real storyteller talks to a friend: "
-    "short punchy sentences, casual yet vivid phrasing, occasional rhetorical "
-    "questions, and a rhythm that breathes. Avoid stiff, literal or list-like "
-    "narration.\n"
+    "in Devanagari script. Write the way a brilliant storyteller talks to a "
+    "friend around a campfire: short punchy sentences, vivid imagery, tension, "
+    "and a rhythm that breathes. Open with a hook line that grabs the viewer in "
+    "the first 3 seconds. Use suspenseful build-ups, cliffhangers between "
+    "segments, rhetorical questions, emotional highs and lows, and a strong "
+    "closing hook that makes the viewer want to watch till the end. Avoid stiff, "
+    "literal, robotic or list-like narration.\n"
     "- Tell the COMPLETE story: the setup, the conflicts, and the CLIMAX and "
     "ending - reveal how the film concludes (spoilers are expected and desired). "
-    "Narrate the climax DRAMATICALLY: build tension, use vivid language and "
-    "beat-pauses (e.g. '\u0914\u0930 \u092b\u093f\u0930...', '\u0909\u0938\u0940 \u092a\u0932...'), "
-    "and make the emotional payoff land. End the script with a hook line.\n"
-    "- timestamps: exactly 4 to {max_scenes} scenes, each {min_scene:.0f} to "
+    "Narrate the climax DRAMATICALLY: slow the beat, build tension, use vivid "
+    "language and dramatic pauses (e.g. '\u0914\u0930 \u092b\u093f\u0930...', "
+    "'\u0909\u0938\u0940 \u092a\u0932...'), and make the emotional payoff land.\n"
+    "- timestamps: exactly {min_scenes} to {max_scenes} scenes, each {min_scene:.0f} to "
     "{max_scene:.0f} seconds long, in ascending order, all inside the video "
-    "duration. Pick the highest-impact visual moments, and each scene must "
+    "duration. Each scene is short (5 seconds) to stay within fair-use limits, "
+    "so pick as many scenes as possible - ideally close to {max_scenes} - spread "
+    "across the ENTIRE film so the scenes total roughly {target_seconds} seconds. "
+    "Pick the highest-impact visual moments, and each scene must "
     "directly show the on-screen moment the narration is talking about at "
     "that point (the most-viewed, most dramatic beats of the film). Include "
     "at least one scene from the climax / final act, and avoid static title "
@@ -164,6 +171,7 @@ def _build_prompt(transcript: str, settings: Settings) -> str:
         target_seconds=settings.target_duration_seconds,
         target_words=settings.target_script_words,
         max_scenes=settings.max_scenes,
+        min_scenes=4,
         min_scene=settings.min_scene_seconds,
         max_scene=settings.max_scene_seconds,
     )
