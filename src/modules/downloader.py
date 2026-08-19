@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 
 _FORMAT = "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b"
 
+_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
 
 class DownloadError(RuntimeError):
     """Raised when a segment clip cannot be downloaded."""
@@ -119,6 +124,9 @@ def _ytdlp_command(
         "--no-overwrites",
         "--quiet",
         "--no-warnings",
+        "--extractor-args", "youtube:player_client=android,ios,web_safari,web",
+        "--user-agent", _BROWSER_UA,
+        "--add-header", "Accept-Language:en-US,en;q=0.9",
         "-o", str(out_path),
         video_url,
     ]
