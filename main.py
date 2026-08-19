@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import shutil
 import sys
 import time
@@ -199,6 +200,47 @@ def _select_candidate(
 
 def run_pipeline(settings: Settings, query: str | None = None, video_id: str | None = None, dry_run: bool = False) -> Path:
     """Execute the five-module pipeline and return the final Short path."""
+    lock = _RunLock(settings.output_dir / ".pipeline.lock")
+    if not lock.acquire():
+        raise PipelineBusyError("another pipeline run is already in progress")
+    try:
+        return _run_pipeline_locked(settings, query=query, video_id=video_id, dry_run=dry_run)
+    finally:
+        lock.release()
+
+
+class PipelineBusyError(RuntimeError):
+    """Raised when another pipeline run holds the lock."""
+
+
+class _RunLock:
+    """Advisory lock so the 3-hour scheduler and a manual run never write
+    ``output/`` at the same time (concurrent runs clobber narration.mp3 /
+    final_short.mp4, which produces a silent or mismatched Short)."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def acquire(self, timeout: float = 0.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(1.0)
+                continue
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            return True
+
+    def release(self) -> None:
+        self.path.unlink(missing_ok=True)
+
+
+def _run_pipeline_locked(settings: Settings, query: str | None = None, video_id: str | None = None, dry_run: bool = False) -> Path:
+    """Execute the five-module pipeline and return the final Short path."""
     start = time.time()
     out_dir, down_dir = _output_dirs(settings)
     prune_backups(settings.backup_dir, settings.backup_retention_hours)
@@ -283,6 +325,8 @@ def run_scheduled(settings: Settings, query: str | None = None, video_id: str | 
     while True:
         try:
             run_pipeline(settings, query=query, video_id=video_id, dry_run=dry_run)
+        except PipelineBusyError:
+            logger.info("pipeline already running; skipping this scheduled tick")
         except _PIPELINE_ERRORS as exc:
             logger.error("scheduled run failed: %s", exc)
         except Exception as exc:  # noqa: BLE001 - keep the loop alive
