@@ -14,7 +14,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from config import Settings
@@ -101,6 +103,130 @@ class StoryPlan:
 # --------------------------------------------------------------------------- #
 # Transcript fetching
 # --------------------------------------------------------------------------- #
+_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
+_VTT_TIME_RE = re.compile(r"(\d+):(\d{2}):(\d{2})\.(\d{3})")
+
+
+def _vtt_seconds(match: re.Match[str]) -> float:
+    h, m, s, ms = (int(g) for g in match.groups())
+    return h * 3600 + m * 60 + s + ms / 1000.0
+
+
+def _parse_vtt(text: str) -> list[tuple[float, str]]:
+    """Extract ``(start_seconds, text)`` cues from a WebVTT subtitle."""
+    cues: list[tuple[float, str]] = []
+    current_start: float | None = None
+    lines: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("WEBVTT") or line.startswith("Kind:"):
+            continue
+        timing = _VTT_TIME_RE.search(line)
+        if timing and "-->" in line:
+            if current_start is not None:
+                body = " ".join(lines).strip()
+                if body:
+                    cues.append((current_start, body))
+            current_start = _vtt_seconds(timing)
+            lines = []
+            continue
+        if timing is None and "-->" not in line:
+            lines.append(line)
+    if current_start is not None:
+        body = " ".join(lines).strip()
+        if body:
+            cues.append((current_start, body))
+    return cues
+
+
+def _fetch_transcript_ytdlp(
+    video_id: str,
+    max_chars: int,
+    preferred_languages: tuple[str, ...],
+) -> str | None:
+    """Fetch a transcript via yt-dlp subtitles (bypasses the IP ban on
+    ``youtube-transcript-api``).
+
+    Returns the transcript string when subtitles are found. Raises
+    :class:`TranscriptError` when the video is reachable but genuinely has no
+    subtitles. Returns None when yt-dlp itself failed (network / block), so
+    the caller can fall back to youtube-transcript-api.
+    """
+    try:
+        from yt_dlp import YoutubeDL
+    except ImportError:
+        return None
+
+    langs = [f"{lang.split('-')[0]}" for lang in preferred_languages]
+    opts = {
+        "skip_download": True,
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "subtitleslangs": langs,
+        "subtitlesformat": "vtt",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "ignoreerrors": False,
+        "socket_timeout": 30,
+        "extractor_args": {
+            "youtube": {"player_client": ["android", "ios", "web_safari", "web"]},
+        },
+        "http_headers": {
+            "User-Agent": _BROWSER_UA,
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+    }
+    with tempfile.TemporaryDirectory(prefix="subs_") as tmp:
+        opts["paths"] = {"home": tmp, "subtitles": tmp}
+        opts["outtmpl"] = str(Path(tmp) / "%(id)s.%(ext)s")
+        try:
+            with YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
+        except Exception as exc:
+            logger.debug("yt-dlp subtitle fetch failed for %s: %s", video_id, exc)
+            return None
+        requested = (info or {}).get("requested_subtitles") or {}
+        files: list[tuple[float, str]] = []
+        for lang in requested:
+            for ext in ("vtt", "srv1", "srv2", "srv3", "json3"):
+                candidate = Path(tmp) / f"{video_id}.{lang}.{ext}"
+                if candidate.exists():
+                    files.append((_parse_vtt(candidate.read_text(encoding="utf-8", errors="replace")), lang))
+                    break
+        if not files:
+            raise TranscriptError(
+                f"no usable transcript found for {video_id} "
+                "(manual or auto-generated, incl. English)"
+            )
+
+    all_cues: list[tuple[float, str]] = []
+    seen: set[tuple[float, str]] = set()
+    for cues, _lang in files:
+        for start, text in cues:
+            key = (start, text)
+            if key not in seen:
+                seen.add(key)
+                all_cues.append(key)
+    all_cues.sort(key=lambda c: c[0])
+    if not all_cues:
+        return None
+
+    lines: list[str] = []
+    chars = 0
+    for start, text in all_cues:
+        line = f"[{start:07.1f}] {text}"
+        chars += len(line)
+        if chars > max_chars:
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def fetch_transcript(
     video_id: str,
     max_chars: int = 250_000,
@@ -109,7 +235,15 @@ def fetch_transcript(
     """Return a timestamped transcript string ``[seconds] text`` for a video.
 
     Prefers manually created English subtitles, then auto-generated ones.
+    Tries yt-dlp subtitles first (which bypasses the IP ban that blocks
+    ``youtube-transcript-api``), then falls back to the transcript API.
     """
+    transcript = _fetch_transcript_ytdlp(video_id, max_chars, preferred_languages)
+    if transcript:
+        return transcript
+
+    # yt-dlp failed (network/IP block); fall back to youtube-transcript-api,
+    # which uses a different request path and may still work.
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
     except ImportError as exc:  # pragma: no cover
