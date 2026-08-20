@@ -50,7 +50,9 @@ Output: `output/story_plan.json`, `output/narration.mp3`, `output/final_short.mp
 and `output/final_long.mp4` (16:9 ~5-minute version, when `MAKE_LONG_VIDEO=true`).
 Downloaded clips live in `downloads/` and are removed unless `KEEP_CLIPS=true`.
 Movies already used are tracked in `output/used_movies.json` so every run picks
-a new one.
+a new one. Completed runs are also logged to `output/movie_history.json` and
+reconstructed from `output/backups/*/story_plan.json`, so `--reset-used` only
+clears the live registry — finished movies never repeat.
 
 ## Docker
 
@@ -83,7 +85,9 @@ See `.env.example` for every setting. Key ones:
 | `TARGET_DURATION_SECONDS` | `120` | target Short length; narration fits the distinct clip timeline, so clips are never repeated |
 | `MAX_SCENES` | `8` | max LLM-chosen clips |
 | `MIN/MAX_SCENE_SECONDS` | `10`/`18` | allowed clip lengths |
-| `USED_MOVIES_PATH` | `output/used_movies.json` | registry of movies already used |
+| `USED_MOVIES_PATH` | `output/used_movies.json` | live registry of movies already used (cleared by `--reset-used`) |
+| `MOVIE_HISTORY_PATH` | `output/movie_history.json` | append-only log of completed runs; never cleared, so finished movies don't repeat |
+| `SEARCH_MAX_RESULTS` | `20` | candidates fetched per genre query so the pool doesn't run dry |
 | `SCHEDULE_INTERVAL_HOURS` | `3` | delay between scheduled runs |
 | `HINDI_FONT` | Lohit-Devanagari | caption font path |
 | `KEEP_CLIPS` | `false` | keep downloaded clip files |

@@ -70,6 +70,17 @@ class Settings(BaseSettings):
         default=Path("output/used_movies.json"),
         description="JSON list of video_ids already turned into Shorts",
     )
+    movie_history_path: Path = Field(
+        default=Path("output/movie_history.json"),
+        description="append-only log of video_ids that completed a run; "
+        "never cleared by --reset-used so finished movies never repeat",
+    )
+    search_max_results: int = Field(
+        default=20,
+        ge=1,
+        description="candidates to fetch per genre query, so the pool "
+        "does not run dry after filtering already-used movies",
+    )
 
     # --- Output backup (retain each run's files for a while) --------------
     backup_dir: Path = Field(

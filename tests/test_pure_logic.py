@@ -243,6 +243,36 @@ def test_has_existing_clips(tmp_path):
     assert _has_existing_clips(s, "abcdefghijk")
 
 
+def test_movie_history_roundtrip_and_survives_reset(tmp_path):
+    from main import load_movie_history, mark_movie_history
+
+    s = Settings(
+        movie_history_path=tmp_path / "history.json",
+        backup_dir=tmp_path / "backups",
+    )
+    assert load_movie_history(s) == set()
+    mark_movie_history(s, "aaa")
+    mark_movie_history(s, "bbb")
+    mark_movie_history(s, "aaa")
+    assert load_movie_history(s) == {"aaa", "bbb"}
+
+
+def test_movie_history_also_derived_from_backups(tmp_path):
+    from main import load_movie_history
+
+    backup = tmp_path / "backups" / "20260101_000000"
+    backup.mkdir(parents=True)
+    (backup / "story_plan.json").write_text(
+        '{"source_video_id": "fromBackup", "hindi_script": "x"}',
+        encoding="utf-8",
+    )
+    s = Settings(
+        movie_history_path=tmp_path / "history.json",
+        backup_dir=tmp_path / "backups",
+    )
+    assert load_movie_history(s) == {"fromBackup"}
+
+
 def test_backup_outputs_copies_and_prunes(tmp_path):
     from main import backup_outputs, prune_backups
 

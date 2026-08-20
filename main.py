@@ -5,7 +5,7 @@ CLI usage::
     python main.py                          # search thriller/romantic/horror, new movie each run
     python main.py --video-id dQw4w9WgXcQ   # skip search, use a known video
     python main.py --dry-run                # no TTS/download/edit, plan only
-    python main.py --reset-used             # forget all previously-used movies
+    python main.py --reset-used             # clear the used registry (durable movie history survives)
     python main.py --schedule               # run now, then repeat every SCHEDULE_INTERVAL_HOURS
 """
 
@@ -80,6 +80,45 @@ def reset_used_movies(path: Path) -> None:
     """Clear the used-movies registry."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"video_ids": []}, indent=2), encoding="utf-8")
+
+
+def load_movie_history(settings: Settings) -> set[str]:
+    """Return every video_id that ever completed a run.
+
+    Combines the append-only ``movie_history.json`` with the set of source
+    video_ids found in ``backups/*/story_plan.json``. ``--reset-used`` only
+    clears ``used_movies.json``, so this durable history keeps finished
+    movies out of the candidate pool even after a reset.
+    """
+    history: set[str] = set()
+    path = settings.movie_history_path
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            history |= set(data.get("video_ids", []) if isinstance(data, dict) else data)
+        except (json.JSONDecodeError, OSError):
+            pass
+    for plan in settings.backup_dir.glob("*/story_plan.json"):
+        try:
+            data = json.loads(plan.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        vid = data.get("source_video_id")
+        if vid:
+            history.add(vid)
+    return history
+
+
+def mark_movie_history(settings: Settings, video_id: str) -> None:
+    """Append ``video_id`` to the durable history log (never cleared by reset)."""
+    history = load_movie_history(settings)
+    history.add(video_id)
+    path = settings.movie_history_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"video_ids": sorted(history)}, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _genres(settings: Settings) -> list[str]:
@@ -172,12 +211,13 @@ def _select_candidate(
         settings.youtube_api_key,
         query=query,
         genres=_genres(settings),
-        max_results=5,
+        max_results=settings.search_max_results,
         language=settings.search_language,
     )
     # search_movies already ranks English-marked titles above view count;
     # iterate in that order, skipping movies we already turned into a Short
-    # or whose clips we already downloaded.
+    # (from the used registry OR the durable run-history) or whose clips we
+    # already downloaded.
     for cand in candidates:
         if cand.video_id in used:
             logger.info("skipping already-used movie %s (%s)", cand.video_id, cand.title)
@@ -247,7 +287,7 @@ def _run_pipeline_locked(settings: Settings, query: str | None = None, video_id:
     prune_backups(settings.backup_dir, settings.backup_retention_hours)
 
     # 1-2. Search + transcript ----------------------------------------------------
-    used = load_used_movies(settings.used_movies_path)
+    used = load_used_movies(settings.used_movies_path) | load_movie_history(settings)
     candidate, transcript = _select_candidate(settings, used, query, video_id)
     logger.info("chosen: %s (%s, %.0f views)", candidate.title, candidate.duration_display, candidate.view_count)
     logger.info("transcript: %d chars", len(transcript))
@@ -361,6 +401,9 @@ def _run_pipeline_locked(settings: Settings, query: str | None = None, video_id:
             logger.debug("removed hook clip %s", hook_path.name)
 
     logger.info("done in %.1fs -> %s (long: %s)", time.time() - start, final_path, long_path or "skipped")
+    # Completed runs are recorded in the durable history so a later
+    # --reset-used can never bring this movie back into the pool.
+    mark_movie_history(settings, candidate.video_id)
     return final_path
 
 
@@ -387,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--video-id", help="skip search and process this video id directly")
     parser.add_argument("--dry-run", action="store_true", help="stop after the story plan is written")
     parser.add_argument("--schedule", action="store_true", help="run now, then repeat every SCHEDULE_INTERVAL_HOURS")
-    parser.add_argument("--reset-used", action="store_true", help="forget all previously-used movies first")
+    parser.add_argument("--reset-used", action="store_true", help="clear the used-movies registry (durable run history is kept, so finished movies still won't repeat)")
     args = parser.parse_args(argv)
 
     settings = get_settings()
