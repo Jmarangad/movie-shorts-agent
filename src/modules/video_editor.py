@@ -1,10 +1,13 @@
-"""Module 5: Assemble the final 9:16 vertical Short.
+"""Module 5: Assemble the final vertical Short and 16:9 long video.
 
 Pipeline:
-1. Load each downloaded clip and center-crop it from 16:9 to 9:16.
-2. Concatenate the clips, repeating the montage until it covers the Hindi
-   audio duration, then trim to exact length.
-3. Use the generated Hindi narration MP3 as the primary audio track.
+1. Load each downloaded clip and center-crop it from 16:9 to 9:16 (or fit the
+   full frame for the 16:9 long format).
+2. Prepend the "most-viewed" hook clip (which keeps its ORIGINAL dialog audio),
+   then concatenate the clips, repeating the montage until it covers the audio
+   duration (long format only), then trim to exact length.
+3. Use the generated Hindi narration MP3 as the primary audio track, played
+   AFTER the hook's original dialog ends.
 4. Burn animated (fade in/out) Hindi captions synchronised to the narration.
 """
 
@@ -373,16 +376,20 @@ def _build(
     """Render a vertical Short or landscape long video with narration + captions.
 
     Both formats prepend the ``hook_path`` clip (the movie's most-viewed
-    moment) before the main montage. When ``loop_to_audio`` is set (long
-    format), the montage is repeated until it covers the full narration so the
-    video length matches the ~5-minute target; the Short instead never repeats
-    clips and warns if the narration runs longer than the footage.
+    moment) before the main montage. The hook keeps its ORIGINAL dialog audio
+    at the start; the narration (and its captions) start after the hook ends.
+    When ``loop_to_audio`` is set (long format), the montage is repeated until
+    it covers the full audio so the video length matches the ~5-minute target;
+    the Short instead never repeats clips and warns if the narration runs
+    longer than the footage.
     """
     try:
         from moviepy import (
             AudioFileClip,
             CompositeVideoClip,
             VideoFileClip,
+            concatenate_audioclips,
+            concatenate_videoclips,
         )
     except ImportError as exc:  # pragma: no cover
         raise VideoEditError("moviepy is not installed") from exc
@@ -395,9 +402,26 @@ def _build(
     out_w = settings.long_output_width if landscape else settings.output_width
     out_h = settings.long_output_height if landscape else settings.output_height
 
-    audio = AudioFileClip(str(audio_path))
-    audio_duration = audio.duration if audio.duration else media_duration(audio_path, settings.ffprobe_binary)
-    logger.info("audio duration: %.1fs", audio_duration)
+    narration = AudioFileClip(str(audio_path))
+    narration_duration = narration.duration if narration.duration else media_duration(audio_path, settings.ffprobe_binary)
+    logger.info("narration duration: %.1fs", narration_duration)
+
+    # The hook keeps its original dialog, played before the narration begins.
+    hook_audio = None
+    hook_duration = 0.0
+    if hook_path is not None:
+        try:
+            hook_audio = AudioFileClip(str(hook_path))
+            hook_duration = hook_audio.duration or media_duration(hook_path, settings.ffprobe_binary)
+            logger.info("hook audio: %.1fs of original dialog", hook_duration)
+        except Exception as exc:  # noqa: BLE001 - fall back to a silent hook
+            logger.warning("could not read hook audio (%s); hook will be silent", exc)
+            hook_audio = None
+            hook_duration = 0.0
+
+    # Total timeline: hook (original dialog) + narration.
+    full_duration = hook_duration + narration_duration
+    logger.info("total timeline: %.1fs", full_duration)
 
     sources = []
     try:
@@ -425,35 +449,38 @@ def _build(
             montage_path = _montage_path(transcoded_paths, tmp_dir, settings.ffmpeg_binary)
             montage = VideoFileClip(str(montage_path), audio=False)
             sources.append(montage)
-            if montage.duration > audio_duration:
-                montage = montage.subclipped(0, audio_duration)
-            elif montage.duration < audio_duration:
+            if montage.duration > full_duration:
+                montage = montage.subclipped(0, full_duration)
+            elif montage.duration < full_duration:
                 if loop_to_audio:
                     logger.info(
-                        "looping montage (%.1fs) to cover narration (%.1fs)",
-                        montage.duration, audio_duration,
+                        "looping montage (%.1fs) to cover audio (%.1fs)",
+                        montage.duration, full_duration,
                     )
-                    loops = [montage] * (int(audio_duration // montage.duration) + 1)
-                    from moviepy import concatenate_videoclips
-
-                    montage = concatenate_videoclips(loops).subclipped(0, audio_duration)
+                    loops = [montage] * (int(full_duration // montage.duration) + 1)
+                    montage = concatenate_videoclips(loops).subclipped(0, full_duration)
                 else:
                     logger.warning(
                         "distinct clip timeline (%.1fs) shorter than narration (%.1fs); "
                         "clips are never repeated, so the video ends early",
-                        montage.duration, audio_duration,
+                        montage.duration, narration_duration,
                     )
 
-            base = montage.with_audio(audio)
+            # Audio = original hook dialog, then the Hindi narration.
+            if hook_audio is not None:
+                full_audio = concatenate_audioclips([hook_audio, narration])
+            else:
+                full_audio = narration
+            base = montage.with_audio(full_audio)
 
             sentences = story.sentences
             caption_clips: list = []
             if sentences:
-                timings = allocate_caption_timings(sentences, audio_duration)
+                timings = allocate_caption_timings(sentences, narration_duration)
                 for sentence, (start, end) in zip(sentences, timings):
                     caption_clips.append(
                         _caption_clip(
-                            sentence, start, end - start,
+                            sentence, start + hook_duration, end - start,
                             out_w, out_h, settings,
                         )
                     )
@@ -480,7 +507,9 @@ def _build(
     finally:
         for source in sources:
             source.close()
-        audio.close()
+        if hook_audio is not None:
+            hook_audio.close()
+        narration.close()
     return output_path
 
 
