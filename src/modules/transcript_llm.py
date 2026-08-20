@@ -56,8 +56,14 @@ _SYSTEM_PROMPT = (
     "that point (the most-viewed, most dramatic beats of the film). Include "
     "at least one scene from the climax / final act, and avoid static title "
     "cards or photo montages.\n"
+    "- hook: the single most-viewed, most eye-catching {hook_seconds:.0f}-second moment "
+    "of the entire film - the highest-impact, most viral beat (usually the peak "
+    "of the climax or the single most dramatic frame). This is shown FIRST, "
+    "before the opening narration, to grab the viewer instantly, so it should "
+    "be different from the opening scene in 'timestamps'.\n"
     "Return ONLY valid JSON matching this schema:\n"
     '{{"hindi_script": str, '
+    '"hook": {{"start_time": float, "end_time": float}}, '
     '"timestamps": [{{"start_time": float, "end_time": float}}]}}'
 )
 
@@ -89,6 +95,7 @@ class StoryPlan:
     hindi_script: str
     timestamps: list[Scene]
     source_video_id: str
+    hook: Scene | None = None
 
     @property
     def sentences(self) -> list[str]:
@@ -308,6 +315,7 @@ def _build_prompt(transcript: str, settings: Settings) -> str:
         min_scenes=4,
         min_scene=settings.min_scene_seconds,
         max_scene=settings.max_scene_seconds,
+        hook_seconds=settings.hook_seconds,
     )
     return (
         f"{system}\n\n"
@@ -325,6 +333,14 @@ def _call_gemini(prompt: str, settings: Settings) -> dict[str, Any]:
         "type": "object",
         "properties": {
             "hindi_script": {"type": "string"},
+            "hook": {
+                "type": "object",
+                "properties": {
+                    "start_time": {"type": "number"},
+                    "end_time": {"type": "number"},
+                },
+                "required": ["start_time", "end_time"],
+            },
             "timestamps": {
                 "type": "array",
                 "items": {
@@ -337,7 +353,7 @@ def _call_gemini(prompt: str, settings: Settings) -> dict[str, Any]:
                 },
             },
         },
-        "required": ["hindi_script", "timestamps"],
+        "required": ["hindi_script", "hook", "timestamps"],
     }
     resp = client.models.generate_content(
         model=settings.gemini_model,
@@ -533,7 +549,86 @@ def parse_story_plan(
         if len(merged) >= settings.max_scenes:
             break
 
-    return StoryPlan(hindi_script=script, timestamps=merged, source_video_id=video_id)
+    hook = _parse_hook(data.get("hook"), settings, video_duration)
+    return StoryPlan(hindi_script=script, timestamps=merged,
+                     source_video_id=video_id, hook=hook)
+
+
+def _parse_hook(
+    raw: Any,
+    settings: Settings,
+    video_duration: float | None,
+) -> Scene | None:
+    """Parse and clamp the LLM's ``hook`` (most-viewed opening moment).
+
+    The hook is a single short window (``settings.hook_seconds``) cut from the
+    movie's most-viewed beat and prepended to every output video. It is
+    clamped to the configured length and to the video duration. Returns None
+    when the LLM did not provide a usable hook (callers treat that as "no
+    hook clip" and skip the prepend).
+    """
+    if not isinstance(raw, dict):
+        return None
+    try:
+        start = float(raw.get("start_time"))
+        end = float(raw.get("end_time"))
+    except (TypeError, ValueError):
+        return None
+    if start < 0 or end <= start:
+        return None
+    end = min(end, start + settings.hook_seconds)
+    if video_duration is not None:
+        end = min(end, video_duration)
+    if end <= start:
+        return None
+    return Scene(start_time=start, end_time=end)
+
+
+_LONG_PROMPT = (
+    "You are a master Hindi storyteller writing a detailed, immersive "
+    "voiceover for a {target_seconds}-second YouTube long video about a "
+    "full-length movie. Given the timestamped transcript, you narrate the "
+    "COMPLETE story in rich, natural, conversational Hindi (Devanagari).\n"
+    "Rules:\n"
+    "- Write around {target_words} words. Short punchy sentences, vivid "
+    "imagery, rising tension, dramatic pauses ('और फिर...', 'उसी पल...'), "
+    "and a strong opening hook plus a satisfying closing line. Never robotic "
+    "or list-like.\n"
+    "- Cover the full arc: setup, conflicts, CLIMAX and the ending (spoilers "
+    "are expected and desired). Vary pace so the narration breathes across "
+    "the whole length.\n"
+    "Return ONLY valid JSON: {{\"hindi_script\": str}}"
+)
+
+
+def generate_long_script(
+    video_id: str,
+    transcript: str,
+    settings: Settings,
+) -> str:
+    """Generate a longer Hindi narration for the ~5-minute long video.
+
+    The long video reuses the Short's clips (looped), so it only needs a
+    longer voiceover, not a new scene plan.
+    """
+    prompt = _LONG_PROMPT.format(
+        target_seconds=settings.long_duration_seconds,
+        target_words=settings.long_script_words,
+    )
+    full_prompt = (
+        f"{prompt}\n\n"
+        f"Movie transcript (timestamped, seconds into the video):\n"
+        f"<transcript>\n{transcript}\n</transcript>\n"
+        f"\nTarget narration word count: {settings.long_script_words} words."
+    )
+    data = _call_llm(full_prompt, settings)
+    script = str(data.get("hindi_script") or "").strip()
+    if not script:
+        raise StoryPlanError("LLM returned an empty hindi_script for the long video")
+    logger.info(
+        "long story script: %d words for %s", len(script.split()), video_id,
+    )
+    return script
 
 
 def generate_story_plan(

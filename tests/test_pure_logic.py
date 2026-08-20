@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import Settings, get_settings  # noqa: E402
 from src.modules.downloader import is_static, sec_to_ts  # noqa: E402
-from src.modules.transcript_llm import StoryPlanError, _SYSTEM_PROMPT, parse_story_plan  # noqa: E402
+from src.modules.transcript_llm import StoryPlanError, _SYSTEM_PROMPT, _parse_hook, parse_story_plan  # noqa: E402
 from src.modules.tts_generator import _compensate_rate  # noqa: E402
 from src.modules.video_editor import (  # noqa: E402
     _clamp_crop_x,
@@ -33,6 +33,55 @@ def test_settings_defaults():
     assert s.max_scene_seconds == 5.0
     assert s.target_duration_seconds == 150
     assert s.movie_genres == "thriller,horror,romantic,survival"
+
+
+def test_long_video_and_hook_defaults():
+    s = get_settings()
+    assert s.hook_seconds == 3.0
+    assert s.make_long_video is True
+    assert s.long_duration_seconds == 300
+    assert s.long_output_width == 1920
+    assert s.long_output_height == 1080
+
+
+def test_parse_hook_clamps_to_hook_seconds():
+    s = Settings(hook_seconds=3.0)
+    hook = _parse_hook({"start_time": 100, "end_time": 120}, s, None)
+    assert hook is not None
+    assert hook.start_time == 100
+    assert hook.duration == 3.0
+
+
+def test_parse_hook_bounds_to_video_duration():
+    s = Settings(hook_seconds=3.0)
+    hook = _parse_hook({"start_time": 10, "end_time": 20}, s, video_duration=11)
+    assert hook is not None
+    assert hook.end_time == 11
+
+
+def test_parse_hook_rejects_bad():
+    s = Settings(hook_seconds=3.0)
+    assert _parse_hook(None, s, None) is None
+    assert _parse_hook({"start_time": 5, "end_time": 5}, s, None) is None
+    assert _parse_hook({"start_time": -1, "end_time": 10}, s, None) is None
+    assert _parse_hook({"start_time": "bad", "end_time": 10}, s, None) is None
+
+
+def test_parse_story_plan_carries_hook():
+    s = Settings()
+    data = {
+        "hindi_script": "पहला वाक्य। दूसरा वाक्य!",
+        "hook": {"start_time": 200, "end_time": 210},
+        "timestamps": [{"start_time": 10, "end_time": 18}],
+    }
+    plan = parse_story_plan(data, "abc123", s)
+    assert plan.hook is not None
+    assert plan.hook.start_time == 200
+
+
+def test_system_prompt_asks_for_hook():
+    assert "hook" in _SYSTEM_PROMPT
+    assert "most-viewed" in _SYSTEM_PROMPT
 
 
 def test_parse_iso_duration():

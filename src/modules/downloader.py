@@ -170,6 +170,44 @@ def download_clip(
     )
 
 
+def download_hook_clip(
+    video_url: str,
+    hook: Scene,
+    downloads_dir: Path,
+    settings: Settings,
+    prefix: str = "hook",
+) -> Path | None:
+    """Download the single most-viewed hook moment, or None if it fails.
+
+    The hook is the 3-second opening grab prepended to every output video.
+    It is validated like any scene clip (decodable + non-static); failures are
+    logged and treated as "no hook" rather than aborting the pipeline.
+    """
+    if hook is None:
+        return None
+    out_path = downloads_dir / f"{prefix}_hook.mp4"
+    if out_path.exists() and out_path.stat().st_size > 0 and is_decodable(out_path, settings.ffmpeg_binary):
+        logger.info("hook clip %s already downloaded; reusing", out_path.name)
+        return out_path
+    try:
+        clip = download_clip(
+            video_url,
+            hook,
+            out_path,
+            ffmpeg_binary=settings.ffmpeg_binary,
+            retries=settings.max_download_retries,
+        )
+    except DownloadError as exc:
+        logger.warning("skipping hook [%.1f-%.1f]s: %s", hook.start_time, hook.end_time, exc)
+        return None
+    score = motion_score(clip)
+    if is_static(score, settings.min_clip_motion):
+        logger.warning("skipping static hook clip %s (motion %.2f)", clip.name, score)
+        clip.unlink(missing_ok=True)
+        return None
+    return clip
+
+
 def download_scenes(
     video_url: str,
     scenes: list[Scene],

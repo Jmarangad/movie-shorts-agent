@@ -97,6 +97,20 @@ class Settings(BaseSettings):
         "clips below this are still photos/title cards and are dropped",
     )
 
+    # --- Hook + long-form video (Module 5) --------------------------------
+    hook_seconds: float = Field(
+        default=3.0, ge=0.5, le=15.0,
+        description="length of the 'most viewed' moment prepended to every output",
+    )
+    make_long_video: bool = Field(
+        default=True,
+        description="also render a 16:9 ~5-minute long video (final_long.mp4)",
+    )
+    long_duration_seconds: int = Field(default=300, ge=60)
+    long_script_words: int = Field(default=700, ge=100, le=3000)
+    long_output_width: int = Field(default=1920)
+    long_output_height: int = Field(default=1080)
+
     # --- Captions (Module 5) ----------------------------------------------
     hindi_font: str = Field(
         default="/usr/share/fonts/truetype/lohit-devanagari/Lohit-Devanagari.ttf",

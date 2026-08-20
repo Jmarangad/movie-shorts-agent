@@ -21,15 +21,16 @@ import time
 from pathlib import Path
 
 from config import Settings, get_settings
-from src.modules.downloader import DownloadError, download_scenes
+from src.modules.downloader import DownloadError, download_hook_clip, download_scenes
 from src.modules.transcript_llm import (
     StoryPlanError,
     TranscriptError,
     fetch_transcript,
+    generate_long_script,
     generate_story_plan,
 )
 from src.modules.tts_generator import fit_rate_to_target, media_duration
-from src.modules.video_editor import build_short
+from src.modules.video_editor import build_long, build_short
 from src.modules.youtube_search import MovieCandidate, YouTubeSearchError, search_movies
 
 logger = logging.getLogger("movie_shorts")
@@ -260,11 +261,16 @@ def _run_pipeline_locked(settings: Settings, query: str | None = None, video_id:
     logger.info("plan: %d scenes, %d words", len(plan.timestamps), plan.word_count)
 
     plan_path = out_dir / "story_plan.json"
+    hook_meta = (
+        {"start_time": plan.hook.start_time, "end_time": plan.hook.end_time}
+        if plan.hook else None
+    )
     plan_path.write_text(
         json.dumps(
             {
                 "source_video_id": candidate.video_id,
                 "hindi_script": plan.hindi_script,
+                "hook": hook_meta,
                 "timestamps": [{"start_time": s.start_time, "end_time": s.end_time} for s in plan.timestamps],
             },
             ensure_ascii=False,
@@ -288,6 +294,18 @@ def _run_pipeline_locked(settings: Settings, query: str | None = None, video_id:
     )
     logger.info("downloaded %d clips", len(clips))
 
+    # 3b. Most-viewed hook clip (prepended to every output) ----------------------
+    hook_path = None
+    if plan.hook is not None:
+        hook_path = download_hook_clip(
+            candidate.url,
+            plan.hook,
+            down_dir,
+            settings,
+            prefix=candidate.video_id[:8],
+        )
+        logger.info("hook clip: %s", hook_path.name if hook_path else "unavailable")
+
     # 4. TTS fitted to the distinct clip timeline --------------------------------
     # Every scene plays exactly once in the final Short, so the narration is
     # targeted at the total length of the downloaded clips, never longer.
@@ -304,17 +322,45 @@ def _run_pipeline_locked(settings: Settings, query: str | None = None, video_id:
 
     # 5. Edit --------------------------------------------------------------------
     final_path = out_dir / "final_short.mp4"
-    final_path = build_short(clips, audio_path, final_path, plan, settings)
+    final_path = build_short(clips, audio_path, final_path, plan, settings, hook_path=hook_path)
+
+    # 5b. Long-form 16:9 video (reuses the same clips, looped) -------------------
+    long_path = None
+    long_audio_path = None
+    if settings.make_long_video:
+        long_path = out_dir / "final_long.mp4"
+        long_audio_path = out_dir / "narration_long.mp3"
+        try:
+            long_script = generate_long_script(candidate.video_id, transcript, settings)
+            long_audio_path, long_duration = fit_rate_to_target(
+                long_script, long_audio_path, settings,
+                target_seconds=float(settings.long_duration_seconds),
+            )
+            logger.info("long narration: %.1fs -> %s", long_duration, long_audio_path.name)
+            long_path = build_long(
+                clips, long_audio_path, long_path, plan, settings, hook_path=hook_path,
+            )
+        except Exception as exc:  # noqa: BLE001 - long video is best-effort
+            logger.error("long video build failed (short still produced): %s", exc)
+            long_path = None
 
     # Keep this run's artifacts in a timestamped backup folder (48 h by default).
-    backup_outputs(settings, final_path, audio_path, plan_path)
+    backup_artifacts = [final_path, audio_path, plan_path]
+    if long_path is not None and long_path.exists():
+        backup_artifacts.append(long_path)
+    if long_audio_path is not None and long_audio_path.exists():
+        backup_artifacts.append(long_audio_path)
+    backup_outputs(settings, *backup_artifacts)
 
     if not settings.keep_clips:
         for clip in clips:
             clip.unlink(missing_ok=True)
             logger.debug("removed clip %s", clip.name)
+        if hook_path is not None:
+            hook_path.unlink(missing_ok=True)
+            logger.debug("removed hook clip %s", hook_path.name)
 
-    logger.info("done in %.1fs -> %s", time.time() - start, final_path)
+    logger.info("done in %.1fs -> %s (long: %s)", time.time() - start, final_path, long_path or "skipped")
     return final_path
 
 

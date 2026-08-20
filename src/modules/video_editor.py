@@ -124,6 +124,47 @@ def _portrait_transcode(
     ffmpeg) so the final step only opens a single concatenated video.
     Returns ``None`` when the source cannot be decoded at all.
     """
+    return _transcode(
+        clip_path, out_path, ffmpeg_binary, ffprobe_binary,
+        out_w, out_h, focus_cx=focus_cx, fps=fps, landscape=False,
+    )
+
+
+def _landscape_transcode(
+    clip_path: Path,
+    out_path: Path,
+    ffmpeg_binary: str,
+    ffprobe_binary: str,
+    out_w: int,
+    out_h: int,
+    focus_cx: float = 0.5,
+    fps: int = 24,
+) -> Path | None:
+    """Transcode a clip to a 16:9 landscape CFR MP4 (for the long video)."""
+    return _transcode(
+        clip_path, out_path, ffmpeg_binary, ffprobe_binary,
+        out_w, out_h, focus_cx=focus_cx, fps=fps, landscape=True,
+    )
+
+
+def _transcode(
+    clip_path: Path,
+    out_path: Path,
+    ffmpeg_binary: str,
+    ffprobe_binary: str,
+    out_w: int,
+    out_h: int,
+    focus_cx: float = 0.5,
+    fps: int = 24,
+    landscape: bool = False,
+) -> Path | None:
+    """Transcode a clip to a fixed-size CFR MP4 via ffmpeg (low memory).
+
+    Portrait output (``landscape=False``) center-crops to the target aspect
+    ratio; landscape output fits the whole frame into the target size without
+    cropping (letterboxed if the source aspect differs). Returns ``None`` when
+    the source cannot be decoded at all.
+    """
     if out_path.exists():
         return out_path
     dims = _probe_dims(clip_path, ffprobe_binary)
@@ -132,7 +173,12 @@ def _portrait_transcode(
     w, h = dims
     target_aspect = out_w / out_h
     src_aspect = w / h
-    if src_aspect > target_aspect:  # too wide -> narrow horizontal strip
+    if landscape:
+        # Fit the full frame inside the target box, letterbox top/bottom or
+        # left/right when the source aspect differs from the target.
+        vf = (f"scale={out_w}:{out_h}:force_original_aspect_ratio=decrease,"
+              f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:color=black")
+    elif src_aspect > target_aspect:  # too wide -> narrow horizontal strip
         new_w = h * target_aspect
         x1 = _clamp_crop_x(focus_cx * w, new_w, w)
         vf = f"crop={new_w}:{h}:{x1}:0,scale={out_w}:{out_h}"
@@ -291,14 +337,47 @@ def _caption_clip(
     )
 
 
-def build_short(
+def _montage_path(
+    transcoded_paths: list[Path],
+    tmp_dir: Path,
+    ffmpeg_binary: str,
+) -> Path:
+    """Concatenate already-normalized clips into a single montage MP4."""
+    list_file = tmp_dir / "concat.txt"
+    list_file.write_text("".join(f"file '{p.name}'\n" for p in transcoded_paths))
+    montage_path = tmp_dir / "montage.mp4"
+    proc = subprocess.run(
+        [
+            ffmpeg_binary, "-y", "-f", "concat", "-safe", "0",
+            "-i", str(list_file), "-c", "copy", str(montage_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0 or not montage_path.exists():
+        raise VideoEditError("could not build ffmpeg montage")
+    return montage_path
+
+
+def _build(
     clip_paths: list[Path],
+    hook_path: Path | None,
     audio_path: Path,
     output_path: Path,
     story: StoryPlan,
     settings: Settings,
+    landscape: bool,
+    loop_to_audio: bool,
 ) -> Path:
-    """Render the final 9:16 Short with narration audio + animated captions."""
+    """Render a vertical Short or landscape long video with narration + captions.
+
+    Both formats prepend the ``hook_path`` clip (the movie's most-viewed
+    moment) before the main montage. When ``loop_to_audio`` is set (long
+    format), the montage is repeated until it covers the full narration so the
+    video length matches the ~5-minute target; the Short instead never repeats
+    clips and warns if the narration runs longer than the footage.
+    """
     try:
         from moviepy import (
             AudioFileClip,
@@ -313,6 +392,9 @@ def build_short(
     if not output_path.parent.exists():
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    out_w = settings.long_output_width if landscape else settings.output_width
+    out_h = settings.long_output_height if landscape else settings.output_height
+
     audio = AudioFileClip(str(audio_path))
     audio_duration = audio.duration if audio.duration else media_duration(audio_path, settings.ffprobe_binary)
     logger.info("audio duration: %.1fs", audio_duration)
@@ -321,47 +403,46 @@ def build_short(
     try:
         with tempfile.TemporaryDirectory(prefix="motion_") as tmp:
             tmp_dir = Path(tmp)
-            portrait_paths = []
-            for i, path in enumerate(clip_paths):
+            transcoded_paths = []
+            # The hook clip is prepended to every output (short and long).
+            order = ([hook_path] if hook_path else []) + clip_paths
+            for i, path in enumerate(order):
                 focus_cx = focus_center_x(path)
                 out = tmp_dir / f"{i:03d}_{path.stem}_v.mp4"
-                pt = _portrait_transcode(
+                transcode = _landscape_transcode if landscape else _portrait_transcode
+                pt = transcode(
                     path, out, settings.ffmpeg_binary, settings.ffprobe_binary,
-                    settings.output_width, settings.output_height, focus_cx, settings.output_fps,
+                    out_w, out_h, focus_cx, settings.output_fps,
                 )
                 if pt is None:
                     logger.warning("skipping undecodable clip %s", path.name)
                     continue
-                portrait_paths.append(pt)
+                transcoded_paths.append(pt)
 
-            if not portrait_paths:
+            if not transcoded_paths:
                 raise VideoEditError("no clips survived normalization")
 
-            list_file = tmp_dir / "concat.txt"
-            list_file.write_text("".join(f"file '{p.name}'\n" for p in portrait_paths))
-            montage_path = tmp_dir / "montage.mp4"
-            proc = subprocess.run(
-                [
-                    settings.ffmpeg_binary, "-y", "-f", "concat", "-safe", "0",
-                    "-i", str(list_file), "-c", "copy", str(montage_path),
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if proc.returncode != 0 or not montage_path.exists():
-                raise VideoEditError("could not build ffmpeg montage")
-
+            montage_path = _montage_path(transcoded_paths, tmp_dir, settings.ffmpeg_binary)
             montage = VideoFileClip(str(montage_path), audio=False)
             sources.append(montage)
             if montage.duration > audio_duration:
                 montage = montage.subclipped(0, audio_duration)
             elif montage.duration < audio_duration:
-                logger.warning(
-                    "distinct clip timeline (%.1fs) shorter than narration (%.1fs); "
-                    "clips are never repeated, so the video ends early",
-                    montage.duration, audio_duration,
-                )
+                if loop_to_audio:
+                    logger.info(
+                        "looping montage (%.1fs) to cover narration (%.1fs)",
+                        montage.duration, audio_duration,
+                    )
+                    loops = [montage] * (int(audio_duration // montage.duration) + 1)
+                    from moviepy import concatenate_videoclips
+
+                    montage = concatenate_videoclips(loops).subclipped(0, audio_duration)
+                else:
+                    logger.warning(
+                        "distinct clip timeline (%.1fs) shorter than narration (%.1fs); "
+                        "clips are never repeated, so the video ends early",
+                        montage.duration, audio_duration,
+                    )
 
             base = montage.with_audio(audio)
 
@@ -373,17 +454,17 @@ def build_short(
                     caption_clips.append(
                         _caption_clip(
                             sentence, start, end - start,
-                            settings.output_width, settings.output_height, settings,
+                            out_w, out_h, settings,
                         )
                     )
 
             final = CompositeVideoClip(
-                [base] + caption_clips, size=(settings.output_width, settings.output_height)
+                [base] + caption_clips, size=(out_w, out_h)
             )
 
             logger.info(
                 "rendering %s (%d×%d, %.1fs)",
-                output_path.name, settings.output_width, settings.output_height, final.duration,
+                output_path.name, out_w, out_h, final.duration,
             )
             final.write_videofile(
                 str(output_path),
@@ -401,3 +482,40 @@ def build_short(
             source.close()
         audio.close()
     return output_path
+
+
+def build_short(
+    clip_paths: list[Path],
+    audio_path: Path,
+    output_path: Path,
+    story: StoryPlan,
+    settings: Settings,
+    hook_path: Path | None = None,
+) -> Path:
+    """Render the final 9:16 Short with narration audio + animated captions.
+
+    ``hook_path`` (the most-viewed 3s opening moment) is prepended when given.
+    """
+    return _build(
+        clip_paths, hook_path, audio_path, output_path, story, settings,
+        landscape=False, loop_to_audio=False,
+    )
+
+
+def build_long(
+    clip_paths: list[Path],
+    audio_path: Path,
+    output_path: Path,
+    story: StoryPlan,
+    settings: Settings,
+    hook_path: Path | None = None,
+) -> Path:
+    """Render a 16:9 ~5-minute long video from the same clips + hook.
+
+    The montage reuses the Short's clips and loops them to cover the longer
+    narration, so the long video tells the full story without new downloads.
+    """
+    return _build(
+        clip_paths, hook_path, audio_path, output_path, story, settings,
+        landscape=True, loop_to_audio=True,
+    )
