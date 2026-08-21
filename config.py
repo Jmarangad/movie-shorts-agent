@@ -57,7 +57,7 @@ class Settings(BaseSettings):
 
     # --- Search (Module 1) ------------------------------------------------
     movie_genres: str = Field(
-        default="thriller,horror,romantic,survival",
+        default="romantic drama,romance,steamy romance,erotic thriller",
         description="comma-separated genres to search (one query each)",
     )
     search_language: str = Field(

@@ -129,10 +129,13 @@ def search_movies(
         YouTubeSearchError: on API/network failures or a missing API key.
     """
     client = _build_client(api_key)
+    # Hollywood-first: add an explicit "hollywood" term so results skew to
+    # English-language studio films rather than Bollywood uploads. The
+    # is_english_candidate() title filter below is the hard gate.
     queries = (
-        [f"{g} english movie full movie" for g in genres]
+        [f"hollywood {g} english movie full movie" for g in genres]
         if genres
-        else [f"{query or 'full movie'} english movie"]
+        else [f"hollywood {query or 'full movie'} english movie"]
     )
 
     seen: dict[str, dict[str, Any]] = {}

@@ -32,7 +32,7 @@ def test_settings_defaults():
     assert s.min_scene_seconds == 5.0
     assert s.max_scene_seconds == 5.0
     assert s.target_duration_seconds == 150
-    assert s.movie_genres == "thriller,horror,romantic,survival"
+    assert s.movie_genres == "romantic drama,romance,steamy romance,erotic thriller"
 
 
 def test_long_video_and_hook_defaults():
